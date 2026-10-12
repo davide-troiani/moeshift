@@ -127,3 +127,5 @@ struct clip_cap {
     bool has_audio;
 };
 struct clip_cap clip_get_cap(const char * fname);
+
+void clip_set_image_max_slice_nums(struct clip_ctx * ctx, int n);

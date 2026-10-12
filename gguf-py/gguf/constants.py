@@ -194,6 +194,7 @@ class Keys:
         DIMENSION_COUNT           = "{arch}.rope.dimension_count"
         DIMENSION_COUNT_SWA       = "{arch}.rope.dimension_count_swa"
         DIMENSION_SECTIONS        = "{arch}.rope.dimension_sections"
+        SECTION_ORDER             = "{arch}.rope.section_order"
         FREQ_BASE                 = "{arch}.rope.freq_base"
         FREQ_BASE_SWA             = "{arch}.rope.freq_base_swa"
         SCALING_TYPE              = "{arch}.rope.scaling.type"
@@ -313,6 +314,7 @@ class Keys:
         BLOCK_COUNT           = "clip.vision.block_count"
         IMAGE_MEAN            = "clip.vision.image_mean"
         IMAGE_STD             = "clip.vision.image_std"
+        MAX_SLICE_NUMS        = "clip.vision.max_slice_nums" # llava-uhd slice cap (MiniCPM-V)
         SPATIAL_MERGE_SIZE    = "clip.vision.spatial_merge_size"
         USE_GELU              = "clip.use_gelu"
         USE_SILU              = "clip.use_silu"
@@ -4180,6 +4182,12 @@ class RopeScalingType(Enum):
     LONGROPE = 'longrope'
 
 
+# M-RoPE: input position slot (t, y, x, z) that feeds each RoPE section, in section order
+class RopeSectionOrder(Enum):
+    TYXZ = 'tyxz' # default
+    ZYXT = 'zyxt'
+
+
 class PoolingType(IntEnum):
     NONE = 0
     MEAN = 1
@@ -4356,6 +4364,7 @@ class VisionProjectorType:
     NEMOTRON_V2_VL = "nemotron_v2_vl"
     HUNYUANVL      = "hunyuanvl"
     MINICPMV4_6    = "minicpmv4_6"
+    MINICPMV4_7    = "minicpmv4_7"
     GRANITE_SPEECH = "granite_speech"  # audio
     MIMOVL         = "mimovl"
 

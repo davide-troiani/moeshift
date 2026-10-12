@@ -23,6 +23,13 @@ enum llama_swa_type {
     LLAMA_SWA_TYPE_SYMMETRIC = 3,
 };
 
+// M-RoPE: which input position slot feeds each RoPE section
+enum llama_rope_section_order {
+    LLAMA_ROPE_SECTION_ORDER_UNSPECIFIED = -1,
+    LLAMA_ROPE_SECTION_ORDER_TYXZ        = 0, // default, slot i feeds section i
+    LLAMA_ROPE_SECTION_ORDER_ZYXT        = 1, // MiniCPM-V 4.7: time last
+};
+
 struct llama_hparams_posnet {
     uint32_t n_embd;
     uint32_t n_layer;
@@ -39,6 +46,7 @@ struct llama_hparams {
     bool rope_finetuned;
     bool use_par_res;
     bool swin_norm;
+    bool norm_before_residual = false;
 
     uint32_t n_ctx_train; // context size the model was trained on
     uint32_t n_embd;
@@ -130,6 +138,10 @@ struct llama_hparams {
 
     std::array<int, 4> rope_sections;
 
+    // M-RoPE: which input position slot feeds each RoPE section. Canvas M-RoPE (MiniCPM-V 4.7)
+    // needs ZYXT: the image canvas time travels in slot z so slot t stays the KV cache position.
+    enum llama_rope_section_order rope_section_order = LLAMA_ROPE_SECTION_ORDER_TYXZ;
+
     // Sliding Window Attention (SWA)
     llama_swa_type swa_type = LLAMA_SWA_TYPE_NONE;
     // the size of the sliding window (0 - no SWA)
@@ -177,6 +189,10 @@ struct llama_hparams {
 
     // for Classifiers
     uint32_t n_cls_out = 1;
+
+    // encoder input embedding dimension (0 = use n_embd_inp())
+    // e.g. the eagle3 encoder fuses target_layers * target_hidden features
+    uint32_t n_embd_inp_enc_impl = 0;
 
     // output embedding dimension (0 = use n_embd)
     uint32_t n_embd_out_impl = 0;
@@ -267,6 +283,9 @@ struct llama_hparams {
 
     // dimension of main + auxiliary input embeddings
     uint32_t n_embd_inp() const;
+
+    // dimension of the encoder input embeddings
+    uint32_t n_embd_inp_enc() const;
 
     // dimension of output embeddings
     uint32_t n_embd_out() const;

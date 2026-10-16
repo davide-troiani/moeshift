@@ -16,6 +16,8 @@ struct ggml_cgraph;
 struct ggml_context;
 struct ggml_tensor;
 
+ggml_tensor * llama_mul_mat_hadamard(ggml_context * ctx, ggml_tensor * cur, ggml_tensor * rot);
+
 struct llama_cparams;
 struct llama_layer;
 

@@ -32,6 +32,10 @@
 #include <fcntl.h>
 #include <sys/uio.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <sys/mman.h>
+#include <TargetConditionals.h>
+#endif
 #endif
 
 namespace {
@@ -1214,6 +1218,7 @@ struct llama_moe_slot_runtime::impl {
     }
 
     ~impl() {
+        stop_prefill_read();
         if (cur.n_layers > 0) {
             flush_ubatch(cur.n_tokens <= 1 ? "decode" : "prefill",
                 cur.n_tokens <= 1 ? n_decode_step : n_prefill_ubatch);
@@ -1637,6 +1642,130 @@ struct llama_moe_slot_runtime::impl {
         dst.ok_ex      += src.ok_ex;
         dst.scatter_n  += src.scatter_n;
         dst.scatter_ex += src.scatter_ex;
+    }
+
+    // A single host buffer streams the next layer while Metal consumes the shared banks.
+    // It contains immutable packed weights only, never model state or routing decisions.
+    std::thread prefill_reader;
+    uint8_t * prefill_data = nullptr;
+    size_t prefill_capacity = 0;
+    int prefill_layer = -1;
+    std::string prefill_error;
+    int64_t prefill_read_ns = 0;
+
+    void stop_prefill_read() {
+        if (prefill_reader.joinable()) {
+            prefill_reader.join();
+        }
+        prefill_layer = -1;
+        if (prefill_data) {
+#ifdef __APPLE__
+            munmap(prefill_data, prefill_capacity);
+#else
+            std::free(prefill_data);
+#endif
+            prefill_data = nullptr;
+            prefill_capacity = 0;
+        }
+    }
+
+    bool prefill_pipeline_enabled(int n_rows) const {
+#if defined(__APPLE__) && TARGET_OS_OSX
+        if (model.arch != LLM_ARCH_QWEN4EXP || n_rows < 1024) {
+            return false;
+        }
+        const char * value = std::getenv("LLAMA_MOE_PREFILL_PIPELINE");
+        if (value && std::strcmp(value, "0") == 0) {
+            return false;
+        }
+        // Larger quants must retain the bounded slot reader rather than grow this buffer.
+        for (const auto & state : layers) {
+            if (state.pack_stride > 1200ULL * 1024 * 1024 / (size_t) n_expert) {
+                return false;
+            }
+        }
+        return true;
+#else
+        (void) n_rows;
+        return false;
+#endif
+    }
+
+    void start_prefill_read(int layer) {
+        GGML_ASSERT(!prefill_reader.joinable());
+        const auto & state = layers[layer];
+        const size_t bytes = (size_t) n_expert * state.pack_stride;
+        if (!prefill_data) {
+            size_t capacity = 0;
+            for (const auto & candidate : layers) {
+                capacity = std::max(capacity, (size_t) n_expert * candidate.pack_stride);
+            }
+            // munmap releases the prefill budget before Metal allocates its decode graph.
+#ifdef __APPLE__
+            void * data = mmap(nullptr, capacity, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+            if (data == MAP_FAILED) {
+                throw std::runtime_error("failed to allocate MoE prefill read buffer");
+            }
+            prefill_data = (uint8_t *) data;
+#else
+            prefill_data = (uint8_t *) std::malloc(capacity);
+            if (!prefill_data) {
+                throw std::bad_alloc();
+            }
+#endif
+            prefill_capacity = capacity;
+        }
+        prefill_layer = layer;
+        prefill_error.clear();
+        const int fd = fd_for(state.pack_path);
+        prefill_reader = std::thread([this, layer, fd, bytes]() {
+            const int64_t start = now_ns();
+            try {
+                struct iovec span = { prefill_data, bytes };
+                readv_span(fd, layers[layer].pack_base, &span, 1);
+            } catch (const std::exception & e) {
+                prefill_error = e.what();
+            }
+            prefill_read_ns = now_ns() - start;
+        });
+    }
+
+    install_timing install_prefill_pipeline(int layer, const std::vector<pending_install> & pending) {
+        const auto & state = layers[layer];
+        const int64_t start = now_ns();
+        if (prefill_layer != layer) {
+            stop_prefill_read();
+            start_prefill_read(layer);
+        }
+        prefill_reader.join();
+        if (!prefill_error.empty()) {
+            throw std::runtime_error(prefill_error);
+        }
+        for (const auto & item : pending) {
+            for (const auto & binding : state.bindings) {
+                const auto & entry = *binding.entry;
+                std::memcpy((uint8_t *) binding.tensor->data + (size_t) item.slot * entry.bytes_per_expert,
+                            prefill_data + (size_t) item.expert * state.pack_stride +
+                                entry.offset - state.pack_base, entry.bytes_per_expert);
+            }
+        }
+        install_timing t;
+        t.n = (int) pending.size();
+        t.n_th = 1;
+        t.pack = true;
+        t.bytes = (size_t) n_expert * state.pack_stride;
+        t.pread_sum_ns = t.pread_max_ns = prefill_read_ns;
+        stats.n_bytes.fetch_add(t.bytes, std::memory_order_relaxed);
+        stats.pread_ns.fetch_add(prefill_read_ns, std::memory_order_relaxed);
+        stats.n_miss.fetch_add(pending.size(), std::memory_order_relaxed);
+        prefill_layer = -1;
+        if (layer + 1 < (int) layers.size() && layers[layer + 1].enabled) {
+            start_prefill_read(layer + 1);
+        } else {
+            stop_prefill_read();
+        }
+        t.wall_ns = now_ns() - start;
+        return t;
     }
 
     install_timing install_pending(layer_state & state, const std::vector<pending_install> & pending,
@@ -2097,6 +2226,7 @@ struct llama_moe_slot_runtime::impl {
     }
 
     void park_expert_memory() {
+        stop_prefill_read();
         if (!park_window_enabled()) {
             return;
         }
@@ -2310,6 +2440,10 @@ void llama_moe_slot_runtime::process(
 
     const int32_t n_rows = (int32_t) expert_ids->ne[1];
 
+    const bool pipelined_prefill = pimpl->prefill_pipeline_enabled(n_rows);
+    if (!pipelined_prefill && pimpl->prefill_data != nullptr) {
+        pimpl->stop_prefill_read();
+    }
     const bool decode = n_rows == 1;
     // 窗口也覆盖投机验证这类**小批次**（批宽 = n_max+1）：它们与单 token decode 走
     // 同一条 mul_mv_id 路径、同一套每层 `.dec` 张量，跨轮复用同一批专家。
@@ -2587,7 +2721,8 @@ void llama_moe_slot_runtime::process(
     pimpl->unique_sum.fetch_add(n_unique, std::memory_order_relaxed);
 
     const llama_moe_slot_runtime::impl::install_timing timing =
-        pimpl->install_pending(state, pending, window_mode);
+        pipelined_prefill ? pimpl->install_prefill_pipeline(layer, pending) :
+                           pimpl->install_pending(state, pending, window_mode);
     pimpl->install_ns.fetch_add(timing.wall_ns, std::memory_order_relaxed);
 
     if (!pending.empty()) {

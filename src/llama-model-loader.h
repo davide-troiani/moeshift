@@ -229,6 +229,9 @@ struct llama_model_loader {
     /// 这个允许 dst 只是 base 的一段子窗口 —— 用于「40 层各自在自己的偏移上开窗口」。
     /// dst 由本函数**新建**（在 expert 张量所在的那个 ggml context 里），所以调用方
     /// 拿到的是一块新 metadata，不需要预先有张量对象。
+    struct ggml_tensor * typed_expert_slot_view(const char * name, struct ggml_tensor * base,
+        const struct ggml_tensor * prototype, size_t byte_offset, int64_t n_slots);
+
     struct ggml_tensor * window_expert_slot_tensor(
         const char * name,
         struct ggml_tensor * base,

@@ -593,7 +593,45 @@ int ggml_metal_op_repeat(ggml_metal_op_t ctx, int idx) {
     GGML_TENSOR_LOCALS( int32_t, ne,  op,         ne);
     GGML_TENSOR_LOCALS(uint64_t, nb,  op,         nb);
 
-    auto pipeline = ggml_metal_library_get_pipeline_repeat(lib, op->type);
+    const ggml_op pattern[] = { GGML_OP_REPEAT, GGML_OP_MUL, GGML_OP_ADD };
+    if (ctx->use_fusion && ctx->can_fuse(idx, pattern, 3)) {
+        const auto mul = ctx->node(idx + 1);
+        const auto add = ctx->node(idx + 2);
+        const auto x = op->src[0];
+        const auto w = mul->src[1];
+        const auto r = add->src[0];
+        if (mul->src[0] == op && add->src[1] == mul &&
+                x->type == GGML_TYPE_F32 && w->type == GGML_TYPE_F32 && r->type == GGML_TYPE_F32 &&
+                op->type == GGML_TYPE_F32 && mul->type == GGML_TYPE_F32 && add->type == GGML_TYPE_F32 &&
+                ggml_is_contiguous(x) && ggml_is_contiguous(w) && ggml_is_contiguous(r) &&
+                ggml_is_contiguous(op) && ggml_is_contiguous(mul) && ggml_is_contiguous(add) &&
+                x->ne[0] == ne0 && x->ne[1] == 1 && x->ne[2] == ne2 && x->ne[3] == 1 &&
+                w->ne[0] == 1 && w->ne[1] == ne1 && w->ne[2] == ne2 && w->ne[3] == 1 &&
+                ne3 == 1 && ggml_are_same_shape(r, add) && ggml_nelements(add) <= INT32_MAX) {
+            for (int i = 1; i < 3; ++i) {
+                if (!ggml_metal_op_concurrency_check(ctx, ctx->node(idx + i))) {
+                    ggml_metal_op_concurrency_reset(ctx);
+                    break;
+                }
+            }
+            auto pipeline = ggml_metal_library_get_pipeline_repeat(lib, GGML_TYPE_F32, true);
+            int32_t args[] = { ne0, ne1, ne2 };
+            ggml_metal_encoder_set_pipeline(enc, pipeline);
+            ggml_metal_encoder_set_bytes(enc, args, sizeof(args), 0);
+            ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(x), 1);
+            ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(w), 2);
+            ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(r), 3);
+            ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(add), 4);
+            const int nth = std::min(256, ggml_metal_pipeline_max_theads_per_threadgroup(pipeline));
+            ggml_metal_encoder_dispatch_threadgroups(enc, (ggml_nelements(add) + nth - 1)/nth, 1, 1, nth, 1, 1);
+            if (ctx->debug_fusion > 0) {
+                GGML_LOG_INFO("%s: fuse REPEAT + MUL + ADD\n", __func__);
+            }
+            return 3;
+        }
+    }
+
+    auto pipeline = ggml_metal_library_get_pipeline_repeat(lib, op->type, false);
 
     ggml_metal_kargs_repeat args = {
         /*.ne00 =*/ ne00,
@@ -2068,6 +2106,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
            op->src[0]->type == GGML_TYPE_F16  ||
            op->src[0]->type == GGML_TYPE_BF16 ||
            op->src[0]->type == GGML_TYPE_Q1_0 ||
+           op->src[0]->type == GGML_TYPE_Q2_0 ||
            op->src[0]->type == GGML_TYPE_Q4_0 ||
            op->src[0]->type == GGML_TYPE_Q4_1 ||
            op->src[0]->type == GGML_TYPE_Q5_0 ||
@@ -3073,7 +3112,7 @@ int ggml_metal_op_bin(ggml_metal_op_t ctx, int idx) {
     ggml_metal_library_t lib = ctx->lib;
     ggml_metal_encoder_t enc = ctx->enc;
 
-    const bool use_fusion = ctx->use_fusion;
+    const bool use_fusion = ctx->use_fusion && op->src[0]->type == GGML_TYPE_F32;
 
     const int debug_fusion = ctx->debug_fusion;
 
@@ -3084,8 +3123,8 @@ int ggml_metal_op_bin(ggml_metal_op_t ctx, int idx) {
     GGML_TENSOR_LOCALS( int32_t, ne,  op,         ne);
     GGML_TENSOR_LOCALS(uint64_t, nb,  op,         nb);
 
-    GGML_ASSERT(op->src[0]->type == GGML_TYPE_F32);
-    GGML_ASSERT(op->src[1]->type == GGML_TYPE_F32);
+    GGML_ASSERT((op->src[0]->type == GGML_TYPE_F32 && op->src[1]->type == GGML_TYPE_F32) ||
+                (op->op == GGML_OP_ADD && op->src[0]->type == GGML_TYPE_F16 && op->src[1]->type == GGML_TYPE_F16));
 
     GGML_ASSERT(ggml_is_contiguous_rows(op->src[0]));
     GGML_ASSERT(ggml_is_contiguous_rows(op->src[1]));

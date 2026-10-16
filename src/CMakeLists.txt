@@ -28,8 +28,12 @@ add_library(llama
             llama-memory.cpp
             llama-memory-hybrid.cpp
             llama-memory-hybrid-iswa.cpp
+            llama-memory-hybrid-idx.cpp
             llama-memory-recurrent.cpp
             llama-mmap.cpp
+            llama-ssd-rows.cpp
+            llama-moe-tensor-loader.cpp
+            llama-moe-tensor-loader.h
             llama-moe-experts.cpp
             llama-moe-experts.h
             llama-moe-slot.cpp

@@ -1,0 +1,11 @@
+diff a/src/models/models.h b/src/models/models.h	(rejected hunks)
+@@ -6,6 +6,9 @@
+ 
+ // note: almost all graphs require at least sqrtf, so include cmath globally
+ #include <cmath>
++#include <map>
++
++class llama_memory_hybrid_idx_context;
+ 
+ //
+ // base classes

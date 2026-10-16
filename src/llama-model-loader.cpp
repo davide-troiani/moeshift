@@ -314,6 +314,7 @@ namespace GGUFMeta {
             case GGUF_TYPE_UINT32:
             case GGUF_TYPE_INT32:   GGML_ASSERT((std::is_same<T,     int32_t>::value) ||
                                                 (std::is_same<T,    uint32_t>::value)); break;
+            case GGUF_TYPE_UINT64: GGML_ASSERT((std::is_same<T, uint64_t>::value)); break;
             case GGUF_TYPE_FLOAT32: GGML_ASSERT((std::is_same<T,       float>::value)); break;
             case GGUF_TYPE_STRING:  GGML_ASSERT((std::is_same<T, std::string>::value)); break;
             default:
@@ -352,10 +353,11 @@ namespace GGUFMeta {
             GGUFMeta::GKV<GGUFMeta::ArrayInfo>::get_kv(ctx, kid);
 
         switch (arr_info.gt) {
-            case GGUF_TYPE_BOOL:
+            case GGUF_TYPE_BOOL: GGML_ASSERT((std::is_same<T, bool>::value) || (std::is_same<T, int32_t>::value) || (std::is_same<T, uint32_t>::value)); break;
             case GGUF_TYPE_UINT32:
             case GGUF_TYPE_INT32:   GGML_ASSERT((std::is_same<T,     int32_t>::value) ||
                                                 (std::is_same<T,    uint32_t>::value)); break;
+            case GGUF_TYPE_UINT64: GGML_ASSERT((std::is_same<T, uint64_t>::value)); break;
             case GGUF_TYPE_FLOAT32: GGML_ASSERT((std::is_same<T,       float>::value)); break;
             case GGUF_TYPE_STRING:  GGML_ASSERT((std::is_same<T, std::string>::value)); break;
             default:
@@ -394,6 +396,9 @@ namespace GGUFMeta {
 
     template bool llama_model_loader::get_arr<std::vector<std::string>>(enum llm_kv kid, std::vector<std::string> & result, bool required);
     template bool llama_model_loader::get_arr<std::array<int32_t, 512>>(enum llm_kv kid, std::array<int32_t, 512> & result, bool required);
+    template bool llama_model_loader::get_arr<std::vector<uint32_t>>(enum llm_kv kid, std::vector<uint32_t> & result, bool required);
+    template bool llama_model_loader::get_arr<std::array<uint64_t, LLAMA_MAX_PLE_NGRAM>>(enum llm_kv kid, std::array<uint64_t, LLAMA_MAX_PLE_NGRAM> & result, bool required);
+    template bool llama_model_loader::get_arr<std::array<uint64_t, LLAMA_MAX_PLE_HEADS>>(enum llm_kv kid, std::array<uint64_t, LLAMA_MAX_PLE_HEADS> & result, bool required);
     template bool llama_model_loader::get_arr<std::vector<int32_t>>(enum llm_kv kid, std::vector<int32_t> & result, bool required);
 
     template<typename T>
@@ -504,6 +509,7 @@ namespace GGUFMeta {
     }
 
     // TODO: this is not very clever - figure out something better
+    template bool llama_model_loader::get_key_or_arr<std::array<bool, 512>>(enum llm_kv kid, std::array<bool, 512> & result, uint32_t n, bool required);
     template bool llama_model_loader::get_key_or_arr<std::array<int, 4>>(enum llm_kv kid, std::array<int, 4> & result, uint32_t n, bool required);
     template bool llama_model_loader::get_key_or_arr<std::array<uint32_t, 512>>(enum llm_kv kid, std::array<uint32_t, 512> & result, uint32_t n, bool required);
     template bool llama_model_loader::get_key_or_arr<std::array<float, 512>>(enum llm_kv kid, std::array<float, 512> & result, uint32_t n, bool required);
@@ -1399,6 +1405,24 @@ void llama_model_loader::alias_expert_slot_tensor(ggml_tensor * dst, ggml_tensor
     dst->view_src  = src;
     dst->view_offs = 0;
     dst->data      = nullptr;
+}
+
+ggml_tensor * llama_model_loader::typed_expert_slot_view(
+        const char * name, ggml_tensor * base, const ggml_tensor * prototype,
+        size_t byte_offset, int64_t n_slots) {
+    if (!base || !prototype || !expert_ctx || n_slots <= 0) {
+        throw std::runtime_error("invalid typed expert window");
+    }
+    const size_t stride = prototype->nb[2];
+    if (byte_offset > ggml_nbytes(base) || uint64_t(n_slots) > (ggml_nbytes(base) - byte_offset)/stride) {
+        throw std::runtime_error("typed expert window exceeds its allocation");
+    }
+    auto * result = ggml_new_tensor_3d(expert_ctx, prototype->type,
+                                       prototype->ne[0], prototype->ne[1], n_slots);
+    ggml_set_name(result, name);
+    result->view_src = base;
+    result->view_offs = byte_offset;
+    return result;
 }
 
 ggml_tensor * llama_model_loader::window_expert_slot_tensor(

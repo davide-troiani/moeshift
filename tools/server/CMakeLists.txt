@@ -74,3 +74,29 @@ target_compile_features(${TARGET_VOXCPM2} PRIVATE cxx_std_17)
 target_include_directories(${TARGET_VOXCPM2} PRIVATE ${CMAKE_SOURCE_DIR})
 target_include_directories(${TARGET_VOXCPM2} PRIVATE ${CMAKE_SOURCE_DIR}/vendor/cpp-httplib)
 target_include_directories(${TARGET_VOXCPM2} PRIVATE ${CMAKE_SOURCE_DIR}/vendor)
+
+# Minimal OpenAI-compatible server using the current server runtime
+
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/ui.h"
+    "#pragma once\n"
+)
+
+add_executable(llama-les-server
+    server-les.cpp
+    server-http.cpp
+)
+
+target_link_libraries(llama-les-server PRIVATE
+    server-context
+    llama-common
+    cpp-httplib
+    ${CMAKE_THREAD_LIBS_INIT}
+)
+
+target_include_directories(llama-les-server PRIVATE
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/vendor
+    ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+target_compile_features(llama-les-server PRIVATE cxx_std_17)

@@ -110,7 +110,14 @@ public:
                      uint32_t   n_swa,
                llama_swa_type   swa_type,
         const layer_filter_cb & filter,
-        const  layer_reuse_cb & reuse);
+        const  layer_reuse_cb & reuse,
+                 const char * name_tag = "");
+
+    const llama_kv_cells & get_cells(llama_seq_id seq_id) const;
+    bool has_cell_ext() const;
+    void get_prev_tokens(const llama_ubatch & ubatch, uint32_t n, std::vector<llama_token> & res) const;
+    void state_read_sinfo(llama_io_read_i & io, llama_seq_id seq_id, llama_state_seq_flags flags,
+                         slot_info_vec_t * sinfos_out, const slot_info_vec_t * sinfos_in);
 
     ~llama_kv_cache() = default;
 
@@ -306,12 +313,14 @@ private:
     void state_write_meta(llama_io_write_i & io, const cell_ranges_t & cr, llama_seq_id seq_id = -1) const;
     void state_write_data(llama_io_write_i & io, const cell_ranges_t & cr) const;
 
-    bool state_read_meta(llama_io_read_i & io, uint32_t strm, uint32_t cell_count,       slot_info & sinfo, llama_seq_id dest_seq_id = -1);
+    // sinfo_in, when set, replaces the find_slot call: the cells are given by the caller
+    bool state_read_meta(llama_io_read_i & io, uint32_t strm, uint32_t cell_count,       slot_info & sinfo, llama_seq_id dest_seq_id = -1, const slot_info * sinfo_in = nullptr);
     bool state_read_data(llama_io_read_i & io, uint32_t strm, uint32_t cell_count, const slot_info & sinfo);
 };
 
 class llama_kv_cache_context : public llama_memory_context_i {
 public:
+    void get_prev_tokens(const llama_ubatch & ubatch, uint32_t n, std::vector<llama_token> & res) const;
     // some shorthands
     using slot_info_vec_t  = llama_kv_cache::slot_info_vec_t;
     using stream_copy_info = llama_kv_cache::stream_copy_info;

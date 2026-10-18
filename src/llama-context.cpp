@@ -1419,6 +1419,17 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     if (moe_slots) {
         moe_slots->ensure_unparked();
     }
+    if (moe_slots && model.arch == LLM_ARCH_QWEN4EXP && ubatch.n_tokens == 1) {
+        size_t reserved = 0;
+        for (auto * backend : backend_ptrs) reserved += ggml_backend_sched_get_buffer_size(sched.get(), backend);
+        if (reserved > 512ULL*1024*1024) {
+            ggml_backend_sched_synchronize(sched.get());
+            gf_res_prev->reset();
+            sched.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(),
+                backend_ptrs.size(), graph_max_nodes(cparams.n_ubatch), cparams.pipeline_parallel, cparams.op_offload));
+            fprintf(stderr, "LES phase-scratch: released %zu bytes before decode\n", reserved);
+        }
+    }
     // 前向探针：见上面 fw_probe_guard 的说明。默认关闭，零开销。
     static const bool fw_probe = [] {
         const char * p = std::getenv("LLAMA_FW_PROBE");

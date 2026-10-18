@@ -157,6 +157,21 @@ void llama_moe_tensor_loader::finish() {
             { &llama_layer::ffn_down_exps,    &llama_layer::ffn_down_exps_dec    },
         };
 
+        int overlay_width = 0;
+        if (model.arch == LLM_ARCH_QWEN4EXP && dec_enabled &&
+            !std::getenv("LLAMA_QWEN_SEPARATE_PREFILL_BANKS")) {
+            overlay_width = 512;
+            for (int fi = 0; fi < 4; ++fi) for (const auto & kv : groups[fi]) {
+                size_t stride_sum = 0;
+                for (int il : kv.second) stride_sum += (model.layers[il].*fams[fi].pf)->nb[2];
+                const auto * base = model.layers[kv.second.front()].*fams[fi].pf;
+                GGML_ASSERT(stride_sum > 0);
+                overlay_width = std::min(overlay_width, int(ggml_nbytes(base) / stride_sum));
+            }
+            for (int il = 0; il < int(model.hparams.n_layer); ++il)
+                GGML_ASSERT(overlay_width >= width_of(il));
+            LLAMA_LOG_INFO("LES phase-overlay: %d slots/layer in unchanged allocations\n", overlay_width);
+        }
         size_t resident = 0;
         int n_win = 0;
         int n_grp = 0;
@@ -186,7 +201,7 @@ void llama_moe_tensor_loader::finish() {
                 if (model.arch == LLM_ARCH_QWEN4EXP && !std::getenv("LLAMA_QWEN_SEPARATE_PREFILL_BANKS")) {
                     size_t max_stride = e->bytes_per_expert;
                     for (int il : members) max_stride = std::max(max_stride, (model.layers[il].*fams[fi].pf)->nb[2]);
-                    size_t decode_offset = prefill_cap * max_stride;
+                    size_t decode_offset = overlay_width ? 0 : prefill_cap * max_stride;
                     const std::string base_name = ggml_get_name(base);
                     ggml_set_name(base, (base_name + ".base").c_str());
                     for (int il : members) {
@@ -199,8 +214,8 @@ void llama_moe_tensor_loader::finish() {
                             name.c_str(), base, original, 0, prefill_cap);
                         if (dec_enabled) {
                             layer.*fams[fi].pf_dec = ml.typed_expert_slot_view(
-                                (name + ".dec").c_str(), base, original, decode_offset, width_of(il));
-                            decode_offset += width_of(il) * entry->bytes_per_expert;
+                                (name + ".dec").c_str(), base, original, decode_offset, overlay_width ? overlay_width : width_of(il));
+                            decode_offset += (overlay_width ? overlay_width : width_of(il)) * entry->bytes_per_expert;
                         }
                         n_win++;
                     }

@@ -739,8 +739,13 @@ struct llama_moe_slot_runtime::impl {
                         continue;
                     }
                     try {
-                        const int32_t expect = layer_width[il] > 0 ? layer_width[il]
-                                                                   : decode_window + prefetch_slots;
+                        const int32_t expect = (model.arch == LLM_ARCH_QWEN4EXP &&
+                            !std::getenv("LLAMA_QWEN_SEPARATE_PREFILL_BANKS"))
+                            ? int32_t(fam[k].first->ne[2])
+                            : (layer_width[il] > 0 ? layer_width[il] : decode_window + prefetch_slots);
+                        GGML_ASSERT(expect >= layer_width[il] && expect <= n_slots);
+                        if (!state.dec_bindings.empty()) GGML_ASSERT(expect == state.window_width);
+                        state.window_width = expect;
                         bind(state, fam[k].first, expect, &state.dec_bindings);
                     } catch (const std::exception & e) {
                         ggml_tensor * t = fam[k].first;
@@ -2453,6 +2458,8 @@ void llama_moe_slot_runtime::process(
     // 「并集装不下」的风险在那里就被消掉，不会落到这里的运行期。
     const bool window_mode = pimpl->decode_window > 0 && n_rows <= pimpl->window_max_rows;
     const bool lookahead_step = pimpl->lookahead.enabled && decode;
+    // Prefill overwrites the same storage: finish all previous speculative reads first.
+    if (!window_mode && pimpl->was_window) pimpl->lookahead.drain();
 
     // auto 模式下按阶段切 experts 的缓存策略：prefill 绕过、decode 不绕过。
     //

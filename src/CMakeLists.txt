@@ -68,3 +68,10 @@ if (BUILD_SHARED_LIBS)
     target_compile_definitions(llama PRIVATE LLAMA_BUILD)
     target_compile_definitions(llama PUBLIC  LLAMA_SHARED)
 endif()
+
+if(TARGET ggml-metal)
+    target_include_directories(llama PRIVATE
+        "${CMAKE_SOURCE_DIR}/ggml/src/ggml-metal"
+    )
+    target_link_libraries(llama PRIVATE ggml-metal)
+endif()

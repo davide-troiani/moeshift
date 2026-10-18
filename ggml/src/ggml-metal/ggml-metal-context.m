@@ -11,6 +11,8 @@
 
 #import <Metal/Metal.h>
 
+#include "bridge.h"
+
 #undef MIN
 #undef MAX
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
@@ -714,6 +716,16 @@ void ggml_metal_set_n_cb(ggml_metal_t ctx, int n_cb) {
         }
 
         ggml_metal_op_free(ctx_op);
+
+        // Encode while demand reads are in flight.
+        // Submit only when weights are ready.
+        for (int i = idx_start; i < idx_end; ++i) {
+            const struct ggml_tensor * op = ctx->gf->nodes[i];
+
+            if (op->op == GGML_OP_MUL_MAT_ID) {
+                les_io_wait_for_tensor(op->src[0]->data);
+            }
+        }
 
         if (cb_idx < 2 || ctx->abort_callback == NULL) {
             [cmd_buf commit];

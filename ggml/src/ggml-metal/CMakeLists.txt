@@ -122,3 +122,7 @@ if (NOT GGML_METAL_EMBED_LIBRARY)
             DESTINATION ${CMAKE_INSTALL_BINDIR}
         )
 endif()
+
+if(TARGET ggml-metal)
+    target_sources(ggml-metal PRIVATE bridge-cpu.mm)
+endif()

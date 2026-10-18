@@ -38,6 +38,8 @@
 #endif
 #endif
 
+#include "bridge.h"
+
 namespace {
 // Parallel pread threads per layer wave.
 //
@@ -615,6 +617,71 @@ struct llama_moe_slot_runtime::impl {
     uint64_t last_pred_read = 0;
     uint64_t last_pf_hits = 0;
     uint64_t last_pf_pub = 0;
+
+    void * demand_ticket = nullptr;
+std::thread demand_thread;
+
+int demand_next_layer = -1;
+std::vector<int32_t> demand_next;
+
+void join_demand() {
+    if (demand_thread.joinable())
+        demand_thread.join();
+}
+
+install_timing start_demand(
+    layer_state & state,
+    const std::vector<pending_install> & pending
+) {
+    join_demand();
+
+    if (!demand_ticket) {
+        demand_ticket = les_io_create();
+
+        for (auto & st : layers)
+            for (auto & b : st.dec_bindings)
+                les_io_register(demand_ticket, b.tensor->data);
+    }
+
+    const uint64_t epoch = les_io_begin(demand_ticket);
+
+    install_timing queued;
+    queued.n = (int) pending.size();
+    queued.bytes = pending.size() * state.pack_bytes;
+    queued.pack = true;
+    queued.n_th = std::max(
+        1, std::min(moe_ssd_io_threads(), queued.n)
+    );
+
+    demand_thread = std::thread([
+        this, &state, pending, epoch,
+        next_layer = demand_next_layer,
+        next = std::move(demand_next)
+    ] {
+        try {
+            const auto timing =
+                install_pending(state, pending, true);
+
+            install_ns.fetch_add(
+                timing.wall_ns,
+                std::memory_order_relaxed
+            );
+
+            les_io_signal(demand_ticket, epoch);
+
+            if (!next.empty())
+                lookahead.arm(next_layer, next);
+
+        } catch (const std::exception & e) {
+            GGML_ABORT(
+                "demand expert read failed: %s",
+                e.what()
+            );
+        }
+    });
+
+    return queued;
+}
 
     explicit impl(const llama_model & model) :
         model(model),
@@ -1223,6 +1290,8 @@ struct llama_moe_slot_runtime::impl {
     }
 
     ~impl() {
+        join_demand();
+        les_io_destroy(demand_ticket);
         stop_prefill_read();
         if (cur.n_layers > 0) {
             flush_ubatch(cur.n_tokens <= 1 ? "decode" : "prefill",
@@ -2424,6 +2493,7 @@ void llama_moe_slot_runtime::process(
         const ggml_tensor * expert_ids,
         ggml_tensor * slot_ids,
         const ggml_tensor * lookahead_pred) {
+    pimpl->join_demand();
     pimpl->ensure_unparked();
     if (!uses_layer(layer) ||
         expert_ids->type != GGML_TYPE_I32 ||
@@ -2728,8 +2798,11 @@ void llama_moe_slot_runtime::process(
     pimpl->unique_sum.fetch_add(n_unique, std::memory_order_relaxed);
 
     const llama_moe_slot_runtime::impl::install_timing timing =
-        pipelined_prefill ? pimpl->install_prefill_pipeline(layer, pending) :
-                           pimpl->install_pending(state, pending, window_mode);
+        (window_mode && decode && !pending.empty())
+        ? pimpl->start_demand(state, pending)
+        : pipelined_prefill
+            ? pimpl->install_prefill_pipeline(layer, pending)
+            : pimpl->install_pending(state, pending, window_mode);
     pimpl->install_ns.fetch_add(timing.wall_ns, std::memory_order_relaxed);
 
     if (!pending.empty()) {
@@ -2767,9 +2840,16 @@ void llama_moe_slot_runtime::process(
         }
         pimpl->lookahead.n_pred_cached.fetch_add(pred.size() - need_read.size(),
                                                  std::memory_order_relaxed);
+
         if (!need_read.empty()) {
-            pimpl->lookahead.arm(layer + 1, need_read);
+            if (window_mode && decode && !pending.empty()) {
+                pimpl->demand_next_layer = layer + 1;
+                pimpl->demand_next = std::move(need_read);
+            } else {
+                pimpl->lookahead.arm(layer + 1, need_read);
+            }
         }
+        
         // 记下「给层 layer+1 的预测」，供 layer+1 的扫描记录用。
         // 注意预测本身是用层 layer 的 hidden 算的（见 qwen35moe.cpp），所以
         // 层 0 永远拿不到预测 —— 预读覆盖率的结构性上界是 39/40。

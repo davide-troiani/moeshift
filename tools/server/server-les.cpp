@@ -1,3 +1,7 @@
+#ifdef LLAMA_LES_METAL_KEEPALIVE
+#include "gpu-keepalive.h"
+#endif
+
 #include "server-context.h"
 #include "server-http.h"
 
@@ -34,6 +38,13 @@ int main(int argc, char ** argv) {
     if (params.n_parallel < 0) {
         params.n_parallel = 1;
     }
+
+#ifdef LLAMA_LES_METAL_KEEPALIVE
+    gpu_keepalive keepalive;
+    if (!keepalive.ready) {
+        return 1;
+    }
+#endif
 
     llama_backend_init();
     llama_numa_init(params.numa);

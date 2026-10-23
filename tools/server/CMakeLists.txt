@@ -100,3 +100,10 @@ target_include_directories(llama-les-server PRIVATE
 )
 
 target_compile_features(llama-les-server PRIVATE cxx_std_17)
+
+if (APPLE AND GGML_METAL)
+    target_sources(llama-les-server PRIVATE gpu-keepalive.mm gpu-keepalive.h)
+    set_source_files_properties(gpu-keepalive.mm PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "-x;objective-c++;-fobjc-arc")
+    target_compile_definitions(llama-les-server PRIVATE LLAMA_LES_METAL_KEEPALIVE)
+    target_link_libraries(llama-les-server PRIVATE "-framework Foundation" "-framework Metal")
+endif()

@@ -2284,6 +2284,30 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_MOE_SLOT_BANK"));
     add_opt(common_arg(
+        {"--prefill-max-tokens"}, "N",
+        "LES adaptive prefill microbatch limit; overrides batch/ubatch (default: 3072)",
+        [](common_params & params, int value) {
+            if (value <= 0) throw std::invalid_argument("prefill-max-tokens must be positive");
+            params.les_prefill_max_tokens = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--moe-prefill-bank"}, "N",
+        "LES shared prefill bank capacity (default: 512)",
+        [](common_params & params, int value) {
+            if (value <= 0 || value > 1024) throw std::invalid_argument("moe-prefill-bank must be in 1..1024");
+            params.les_prefill_bank = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--moe-decode-bank"}, "N",
+        "LES shared bank slots retained in decode; per-layer windows stay active (default: 0)",
+        [](common_params & params, int value) {
+            if (value < 0) throw std::invalid_argument("moe-decode-bank must be nonnegative");
+            params.les_decode_bank = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"--moe-k-prefill"}, "N",
         "MoE top-k during prompt eval (default: model metadata). experts must still match training K",
         [](common_params & params, int value) {

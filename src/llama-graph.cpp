@@ -1,4 +1,6 @@
+extern thread_local struct ggml_tensor * les_parallel_ffn;
 #include "llama-graph.h"
+#include "../ggml/src/ggml-impl.h"
 
 #include "llama-impl.h"
 #include "llama-model.h"
@@ -124,9 +126,7 @@ void llm_graph_input_embd_h::set_input(const llama_ubatch * ubatch) {
     //       for now, we assume that the hidden state is always provided as an embedding
     //       ref: https://github.com/ggml-org/llama.cpp/pull/23643
     if (ubatch->embd) {
-        GGML_ASSERT(n_embd == h->ne[0]);
-
-        ggml_backend_tensor_set(h, ubatch->embd, 0, n_tokens*n_embd*ggml_element_size(h));
+        ggml_backend_tensor_set(h, ubatch->embd, 0, n_tokens*h->ne[0]*ggml_element_size(h));
     }
 }
 
@@ -134,7 +134,7 @@ bool llm_graph_input_embd_h::can_reuse(const llm_graph_params & params) {
     bool res = true;
 
     res &= (!params.ubatch.token) || (tokens && tokens->ne[0] == params.ubatch.n_tokens);
-    res &= (!params.ubatch.embd)  || (embd   && embd->ne[1]   == params.ubatch.n_tokens);
+    res &= params.ubatch.token || (!params.ubatch.embd) || (embd && embd->ne[1] == params.ubatch.n_tokens);
     res &= (!params.ubatch.embd)  || (h      && h->ne[1]      == params.ubatch.n_tokens);
 
     return res;
@@ -1636,7 +1636,56 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         cb(selected_experts_mm, "ffn_moe_slots", il);
     }
 
+
+    if (arch == LLM_ARCH_QWEN4EXP && moe_decode_phase && les_parallel_ffn) {
+        ggml_build_forward_expand(gf, selected_experts_mm);
+        ggml_build_forward_expand(gf, les_parallel_ffn);
+        les_parallel_ffn = nullptr;
+    }
+
     cur = ggml_reshape_3d(ctx0, cur, n_embd, 1, n_tokens);
+
+
+    if (arch == LLM_ARCH_QWEN4EXP && moe_decode_phase && n_tokens <= 3 &&
+        moe_slots && !weight_before_ffn && !gate_up_exps && gate_exps && up_exps && down_exps &&
+        !up_exps_b && !gate_exps_b && !down_exps_b &&
+        !up_exps_s && !gate_exps_s && !down_exps_s && loras->empty()) {
+        // Only this graph may emit signed readiness IDs; ordinary one-token prefill must not.
+        static_assert(sizeof(ggml_map_custom1_op_params) <= 15*sizeof(int32_t));
+        static_assert(sizeof(ggml_map_custom2_op_params) <= 15*sizeof(int32_t));
+        GGML_ASSERT(selected_experts_mm->op == GGML_OP_MAP_CUSTOM1 ||
+                    selected_experts_mm->op == GGML_OP_MAP_CUSTOM2);
+        selected_experts_mm->op_params[15] = 0x4c4553;
+        auto phase = [&](int ready) {
+            ggml_tensor * up = build_lora_mm_id(up_exps, cur, selected_experts_mm);
+            ggml_tensor * gate = build_lora_mm_id(gate_exps, cur, selected_experts_mm);
+            ggml_tensor * down = build_lora_mm_id(down_exps,
+                ggml_swiglu_split(ctx0, gate, up), selected_experts_mm);
+            up->op_params[1] = gate->op_params[1] = down->op_params[1] = ready;
+            cb(up, ready == 1 ? "ffn_moe_ready_up" : "ffn_moe_late_up", il);
+            cb(gate, ready == 1 ? "ffn_moe_ready_gate" : "ffn_moe_late_gate", il);
+            cb(down, ready == 1 ? "ffn_moe_ready_down" : "ffn_moe_late_down", il);
+            ggml_build_forward_expand(gf, down);
+            return down;
+        };
+        ggml_tensor * resident = phase(1);
+        ggml_tensor * missing = phase(2);
+        ggml_tensor * experts = ggml_mul(ctx0, ggml_add(ctx0, resident, missing), weights);
+        cb(experts, "ffn_moe_weighted", il);
+        ggml_build_forward_expand(gf, experts);
+        ggml_tensor * rows[LLAMA_MAX_EXPERTS] = {};
+        for (uint32_t i = 0; i < hparams.n_expert_used; ++i) {
+            rows[i] = ggml_view_2d(ctx0, experts, n_embd, n_tokens, experts->nb[2], i*experts->nb[1]);
+            ggml_build_forward_expand(gf, rows[i]);
+        }
+        ggml_tensor * out = rows[0];
+        for (uint32_t i = 1; i < hparams.n_expert_used; ++i) {
+            out = ggml_add(ctx0, out, rows[i]);
+            ggml_build_forward_expand(gf, out);
+        }
+        cb(out, "ffn_moe_out", il);
+        return out;
+    }
 
     // ── A2：把 MoE 拆成两段，让「已驻留专家」的计算盖住「缺失专家」的读取 ──
     //

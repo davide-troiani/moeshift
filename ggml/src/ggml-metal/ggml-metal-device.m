@@ -1770,6 +1770,50 @@ bool ggml_metal_buffer_unpark(ggml_metal_buffer_t buf) {
     return true;
 }
 
+bool ggml_metal_buffer_active_ranges(ggml_metal_buffer_t buf,
+        const size_t * offsets, const size_t * sizes, size_t n_ranges) {
+#if TARGET_OS_OSX
+    if (!buf || !buf->owned || !buf->is_shared || n_ranges > GGML_METAL_MAX_BUFFERS ||
+        (n_ranges && (!offsets || !sizes))) return false;
+    const size_t page = sysconf(_SC_PAGESIZE);
+    const size_t full_offset = 0, full_size = buf->all_size;
+    if (!n_ranges) { offsets = &full_offset; sizes = &full_size; n_ranges = 1; }
+    size_t starts[GGML_METAL_MAX_BUFFERS], ends[GGML_METAL_MAX_BUFFERS];
+    int count = 0;
+    for (size_t i = 0; i < n_ranges; ++i) {
+        if (!sizes[i] || offsets[i] > buf->all_size || sizes[i] > buf->all_size - offsets[i] ||
+            (i && offsets[i] < offsets[i-1])) return false;
+        const size_t start = offsets[i] / page * page;
+        const size_t end = (offsets[i] + sizes[i] + page - 1) / page * page;
+        if (end > buf->all_size) return false;
+        if (count && start <= ends[count-1]) ends[count-1] = ends[count-1] > end ? ends[count-1] : end;
+        else { starts[count] = start; ends[count++] = end; }
+    }
+    for (int i = 0; i < count; ++i)
+        if (ends[i] - starts[i] > ggml_metal_device_get_props(buf->dev)->max_buffer_size) return false;
+    if (!ggml_metal_buffer_park(buf)) return false;
+    // Every expert mapping is invalidated by the caller before these pages can be reused.
+    if (madvise(buf->all_data, buf->all_size, MADV_FREE_REUSABLE) != 0) return false;
+    buf->n_buffers = count;
+    size_t active = 0;
+    for (int i = 0; i < count; ++i) {
+        const size_t len = ends[i] - starts[i];
+        buf->buffers[i].data = (char *) buf->all_data + starts[i];
+        buf->buffers[i].size = buf->buffers[i].metal_size = len;
+        buf->buffers[i].metal = nil;
+        if (madvise(buf->buffers[i].data, len, MADV_FREE_REUSE) != 0) return false;
+        active += len;
+    }
+    if (!ggml_metal_buffer_unpark(buf)) return false;
+    fprintf(stderr, "LES phase-memory: expert active=%zu reserved=%zu released=%zu metal_total=%llu bytes\n",
+            active, buf->all_size, buf->all_size - active,
+            (unsigned long long) buf->dev->mtl_device.currentAllocatedSize);
+    return true;
+#else
+    return false;
+#endif
+}
+
 void * ggml_metal_buffer_get_base(ggml_metal_buffer_t buf) {
     return buf->all_data;
 }

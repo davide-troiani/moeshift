@@ -10553,6 +10553,7 @@ kernel void kernel_mul_mv_id(
         device const char * ids,
         threadgroup  char * shmem [[threadgroup(0)]],
         uint3  tgpig[[threadgroup_position_in_grid]],
+        uint3 tptg[[threads_per_threadgroup]],
         ushort tiitg[[thread_index_in_threadgroup]],
         ushort tiisg[[thread_index_in_simdgroup]],
         ushort sgitg[[simdgroup_index_in_threadgroup]]) {
@@ -10561,7 +10562,22 @@ kernel void kernel_mul_mv_id(
 
     tgpig.z = 0;
 
-    const int32_t i02 = ((device const int32_t *) (ids + iid1*args.nbi1))[idx];
+
+    int32_t i02 = ((device const int32_t *) (ids + iid1*args.nbi1))[idx];
+    const int phase = args.nei1 < 0 ? -args.nei1 : 0;
+    if (phase) {
+        const bool pending = i02 < 0;
+        if ((phase == 1 && pending) || (phase == 2 && !pending)) {
+            // One threadgroup clears the inactive column. Other groups do no work.
+            if (tgpig.x == 0 && tgpig.y == 0) {
+                device float * out = (device float *)dst + (idx + iid1*args.ne1)*args.ne0;
+                const uint threads = tptg.x*tptg.y*tptg.z;
+                for (int row = tiitg; row < args.ne0; row += threads) out[row] = 0.0f;
+            }
+            return;
+        }
+        if (pending) i02 = -i02 - 1;
+    }
 
     const int64_t i11 = idx % args.ne11;
     const int64_t i12 = iid1;

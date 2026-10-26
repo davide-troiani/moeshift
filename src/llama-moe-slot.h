@@ -73,6 +73,8 @@ public:
     /// 下次 process() / llama_decode 会自动再包。页内容作废，必须清 LRU。
     void park_expert_memory();
     void ensure_unparked();
+    bool adaptive_phase_change(bool decode) const;
+    void set_adaptive_phase(bool decode);
 
     /// 在 prefill 之前、空闲期把静态预热表读进各层 decode 窗口（见 LLAMA_MOE_PREWARM）。
     /// decode 段与 prefill 段物理分离，所以这笔读能活过 prefill，阶段切换只重挂映射。

@@ -2456,7 +2456,7 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
 
         ggml_metal_kargs_mul_mv_id args = {
             /*.nei0 =*/ ne20,
-            /*.nei1 =*/ ne21,
+            /*.nei1 =*/ op->op_params[1] ? -op->op_params[1] : ne21,
             /*.nbi1 =*/ nb21,
             /*.ne00 =*/ ne00,
             /*.ne01 =*/ ne01,

@@ -311,6 +311,8 @@ bool   ggml_metal_buffer_is_shared(ggml_metal_buffer_t buf);
 // back as zeros and the first decode after unpark is wrong.
 bool   ggml_metal_buffer_park     (ggml_metal_buffer_t buf);
 bool   ggml_metal_buffer_unpark   (ggml_metal_buffer_t buf);
+bool   ggml_metal_buffer_active_ranges(ggml_metal_buffer_t buf,
+    const size_t * offsets, const size_t * sizes, size_t n_ranges);
 
 void   ggml_metal_buffer_memset_tensor(ggml_metal_buffer_t buf, struct ggml_tensor * tensor, uint8_t value, size_t offset, size_t size);
 void   ggml_metal_buffer_set_tensor   (ggml_metal_buffer_t buf, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size);

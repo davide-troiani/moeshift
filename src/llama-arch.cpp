@@ -490,6 +490,9 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
     { LLM_TENSOR_NEXTN_EH_PROJ,                          "blk.%d.nextn.eh_proj" },
     { LLM_TENSOR_NEXTN_EMBED_TOKENS,                     "blk.%d.nextn.embed_tokens" },
     { LLM_TENSOR_NEXTN_ENORM,                            "blk.%d.nextn.enorm" },
+    { LLM_TENSOR_NEXTN_HC_HEAD_NORM, "blk.%d.nextn.hc_head_norm" },
+    { LLM_TENSOR_NEXTN_HC_HEAD_DOWN, "blk.%d.nextn.hc_head_down" },
+    { LLM_TENSOR_NEXTN_HC_HEAD_UP,   "blk.%d.nextn.hc_head_up" },
     { LLM_TENSOR_NEXTN_HNORM,                            "blk.%d.nextn.hnorm" },
     { LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD,                 "blk.%d.nextn.shared_head_head" },
     { LLM_TENSOR_NEXTN_SHARED_HEAD_NORM,                 "blk.%d.nextn.shared_head_norm" },
@@ -830,6 +833,9 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
     {LLM_TENSOR_NEXTN_EH_PROJ,              {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
     {LLM_TENSOR_NEXTN_EMBED_TOKENS,         {LLM_TENSOR_LAYER_REPEATING, GGML_OP_GET_ROWS}},
     {LLM_TENSOR_NEXTN_ENORM,                {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_NEXTN_HC_HEAD_NORM, {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_NEXTN_HC_HEAD_DOWN, {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_NEXTN_HC_HEAD_UP,   {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
     {LLM_TENSOR_NEXTN_HNORM,                {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
     {LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD,     {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
     {LLM_TENSOR_NEXTN_SHARED_HEAD_NORM,     {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
@@ -955,6 +961,7 @@ bool llm_arch_is_diffusion(const llm_arch & arch) {
 
 bool llm_arch_supports_rs_rollback(const llm_arch & arch) {
     switch (arch) {
+        case LLM_ARCH_QWEN4EXP:
         case LLM_ARCH_QWEN35:
         case LLM_ARCH_QWEN35MOE:
             return true;

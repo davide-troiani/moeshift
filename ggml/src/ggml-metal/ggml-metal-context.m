@@ -444,7 +444,17 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
     }
 
     // number of nodes encoded by the main thread (empirically determined)
-    const int n_main = MAX(64, 0.1*gf->n_nodes);
+
+    int n_main = MAX(64, 0.1*gf->n_nodes);
+    // Keep the shared-expert prefix in a command buffer without an I/O dependency.
+    bool ready_prefix = false;
+    for (int i = 0; i < gf->n_nodes; ++i) {
+        if (strstr(gf->nodes[i]->name, "ffn_shexp") != NULL) ready_prefix = true;
+        if (gf->nodes[i]->op == GGML_OP_MUL_MAT_ID && gf->nodes[i]->op_params[1] != 1) {
+            if (ready_prefix && i > 0) n_main = i;
+            break;
+        }
+    }
 
     // number of threads in addition to the main thread
     const int n_cb = ctx->n_cb;
@@ -620,7 +630,24 @@ void ggml_metal_graph_optimize(ggml_metal_t ctx, struct ggml_cgraph * gf) {
     //const int64_t t_start = ggml_time_us();
 
     if (ctx->use_graph_optimize) {
-        ggml_graph_optimize(gf);
+
+        // Readiness is an external dependency: the generic memory-only reorder
+        // cannot move late kernels into the ready prefix's command buffer.
+        int boundary = -1;
+        for (int i = 0; i < gf->n_nodes; ++i) {
+            if (gf->nodes[i]->op == GGML_OP_MUL_MAT_ID && gf->nodes[i]->op_params[1] == 2) {
+                boundary = i;
+                break;
+            }
+        }
+        if (boundary > 0) {
+            struct ggml_cgraph ready = ggml_graph_view(gf, 0, boundary);
+            struct ggml_cgraph late = ggml_graph_view(gf, boundary, gf->n_nodes);
+            ggml_graph_optimize(&ready);
+            ggml_graph_optimize(&late);
+        } else {
+            ggml_graph_optimize(gf);
+        }
     }
 
     //printf("%s: graph optimize took %.3f ms\n", __func__, (ggml_time_us() - t_start) / 1000.0);
@@ -694,6 +721,22 @@ void ggml_metal_set_n_cb(ggml_metal_t ctx, int n_cb) {
 
         id<MTLCommandBuffer> cmd_buf = ctx->cmd_bufs[cb_idx].obj;
 
+
+        // Queue a GPU-side dependency before creating the compute encoder.
+        // Host encoding and later independent work can proceed immediately.
+        void * previous = NULL;
+        for (int i = idx_start; i < idx_end; ++i) {
+            const struct ggml_tensor * op = ctx->gf->nodes[i];
+            if (op->op == GGML_OP_MUL_MAT_ID && op->op_params[1] != 1) {
+                uint64_t value = 0;
+                void * ticket = les_io_lookup(op->src[0]->data, &value);
+                if (ticket && ticket != previous) {
+                    les_io_encode_wait(ticket, value, cmd_buf);
+                    previous = ticket;
+                }
+            }
+        }
+
         ggml_metal_op_t ctx_op = ggml_metal_op_init(
             ctx->dev,
             cmd_buf,
@@ -716,16 +759,6 @@ void ggml_metal_set_n_cb(ggml_metal_t ctx, int n_cb) {
         }
 
         ggml_metal_op_free(ctx_op);
-
-        // Encode while demand reads are in flight.
-        // Submit only when weights are ready.
-        for (int i = idx_start; i < idx_end; ++i) {
-            const struct ggml_tensor * op = ctx->gf->nodes[i];
-
-            if (op->op == GGML_OP_MUL_MAT_ID) {
-                les_io_wait_for_tensor(op->src[0]->data);
-            }
-        }
 
         if (cb_idx < 2 || ctx->abort_callback == NULL) {
             [cmd_buf commit];

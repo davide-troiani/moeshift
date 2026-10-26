@@ -502,6 +502,9 @@ struct common_params {
 
     std::string moe_experts;
     int32_t moe_slot_bank = 0;
+    int32_t les_prefill_max_tokens = 3072;
+    int32_t les_prefill_bank = 512;
+    int32_t les_decode_bank = 0;
     // 0 = hparams. Prefill/decode can differ; experts stays at training K.
     int32_t moe_k_prefill = 0;
     int32_t moe_k_decode  = 0;

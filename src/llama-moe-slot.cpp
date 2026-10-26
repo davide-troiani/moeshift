@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <set>
 #include <stdexcept>
@@ -618,30 +619,34 @@ struct llama_moe_slot_runtime::impl {
     uint64_t last_pf_hits = 0;
     uint64_t last_pf_pub = 0;
 
-    void * demand_ticket = nullptr;
-std::thread demand_thread;
+    std::vector<void *> demand_tickets;
+std::vector<std::thread> demand_threads;
 
 int demand_next_layer = -1;
 std::vector<int32_t> demand_next;
 
 void join_demand() {
-    if (demand_thread.joinable())
-        demand_thread.join();
+    for (auto & thread : demand_threads) if (thread.joinable()) thread.join();
 }
 
 install_timing start_demand(
     layer_state & state,
     const std::vector<pending_install> & pending
 ) {
-    join_demand();
 
-    if (!demand_ticket) {
-        demand_ticket = les_io_create();
-
-        for (auto & st : layers)
-            for (auto & b : st.dec_bindings)
-                les_io_register(demand_ticket, b.tensor->data);
+    const size_t layer_index = size_t(&state - layers.data());
+    if (demand_tickets.empty()) {
+        demand_tickets.resize(layers.size(), nullptr);
+        demand_threads.resize(layers.size());
+        for (size_t il = 0; il < layers.size(); ++il) {
+            demand_tickets[il] = les_io_create();
+            for (auto & binding : layers[il].dec_bindings)
+                les_io_register(demand_tickets[il], binding.tensor->data);
+        }
     }
+    auto & demand_thread = demand_threads[layer_index];
+    if (demand_thread.joinable()) demand_thread.join();
+    void * demand_ticket = demand_tickets[layer_index];
 
     const uint64_t epoch = les_io_begin(demand_ticket);
 
@@ -654,7 +659,7 @@ install_timing start_demand(
     );
 
     demand_thread = std::thread([
-        this, &state, pending, epoch,
+        this, &state, pending, epoch, demand_ticket,
         next_layer = demand_next_layer,
         next = std::move(demand_next)
     ] {
@@ -1238,8 +1243,11 @@ install_timing start_demand(
                 if (!layers[il].enabled || layer_width[il] <= 0) {
                     continue;
                 }
-                const int32_t usable = layer_width[il] -
-                    (prefetch_unified ? 0 : prefetch_slots);
+                const auto & layer = model.layers[il];
+                const ggml_tensor * physical = layer.ffn_up_exps_dec ? layer.ffn_up_exps_dec : layer.ffn_gate_up_exps_dec;
+                const int32_t width = model.arch == LLM_ARCH_QWEN4EXP && physical
+                    ? int32_t(physical->ne[2]) : layer_width[il];
+                const int32_t usable = width - prefetch_slots;
                 if (usable > 0 && (cache_min == 0 || usable < cache_min)) {
                     cache_min = usable;
                 }
@@ -1291,7 +1299,7 @@ install_timing start_demand(
 
     ~impl() {
         join_demand();
-        les_io_destroy(demand_ticket);
+        for (void * ticket : demand_tickets) les_io_destroy(ticket);
         stop_prefill_read();
         if (cur.n_layers > 0) {
             flush_ubatch(cur.n_tokens <= 1 ? "decode" : "prefill",
@@ -2089,6 +2097,7 @@ install_timing start_demand(
     int n_enabled = 0;
     int n_pack_ok = 0;
     bool shared_bank = false;
+    bool adaptive_decode = false;
     // 按层 decode 缓存：每层分到 [layer*W, (layer+1)*W) 一段私有 slot 窗口，
     // 窗口内 LRU 跨 token 保留。prefill 不用窗口（一层要用 100+ 专家，装不下 W），
     // 仍然是「整块 bank + 每层清空」。
@@ -2445,6 +2454,55 @@ void llama_moe_slot_runtime::park_expert_memory() {
     pimpl->park_expert_memory();
 }
 
+bool llama_moe_slot_runtime::adaptive_phase_change(bool decode) const {
+    return std::getenv("LLAMA_LES_DECODE_BANK") && decode != pimpl->adaptive_decode;
+}
+
+void llama_moe_slot_runtime::set_adaptive_phase(bool decode) {
+    if (!adaptive_phase_change(decode)) return;
+    if (pimpl->model.arch != LLM_ARCH_QWEN4EXP || pimpl->decode_window <= 0)
+        throw std::runtime_error("adaptive LES requires Qwen4Exp with decode windows");
+    pimpl->join_demand();
+    pimpl->lookahead.drain();
+    pimpl->stop_prefill_read();
+    pimpl->prewarm_ready = false;
+    pimpl->prewarm_placed.clear();
+    const size_t retained = std::stoul(std::getenv("LLAMA_LES_DECODE_BANK"));
+    using span = std::pair<size_t, size_t>;
+    std::map<ggml_backend_buffer_t, std::map<ggml_tensor *, size_t>> bases;
+    for (auto & state : pimpl->layers) {
+        for (const auto & binding : state.bindings) {
+            auto * base = binding.tensor->view_src;
+            if (!base || !base->buffer) throw std::runtime_error("adaptive LES requires shared expert bases");
+            bases[base->buffer][base] = std::max(bases[base->buffer][base], binding.tensor->nb[2]);
+        }
+        pimpl->clear_layer_cache(state);
+    }
+    for (const auto & buffer : bases) {
+        std::vector<span> ranges;
+        for (const auto & base : buffer.second) {
+            const size_t offset = (char *) base.first->data - (char *) ggml_backend_buffer_get_base(buffer.first);
+            const size_t discard = (pimpl->n_slots - retained) * base.second;
+            if (discard >= ggml_nbytes(base.first)) throw std::runtime_error("adaptive LES bank exceeds allocation");
+            ranges.emplace_back(offset + discard, ggml_nbytes(base.first) - discard);
+        }
+        std::sort(ranges.begin(), ranges.end());
+        std::vector<size_t> offsets, sizes;
+        for (const auto & range : ranges) { offsets.push_back(range.first); sizes.push_back(range.second); }
+        auto * dev = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(buffer.first));
+        using ranges_fn = bool (*)(ggml_backend_buffer_t, const size_t *, const size_t *, size_t);
+        auto fn = (ranges_fn) ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(dev),
+            "ggml_backend_metal_buffer_active_ranges");
+        if (!fn || !fn(buffer.first, offsets.data(), sizes.data(), decode ? offsets.size() : 0))
+            throw std::runtime_error("adaptive LES cannot release/restore expert Metal memory");
+    }
+    pimpl->was_window = false;
+    pimpl->adaptive_decode = decode;
+    moe_log("adaptive phase=%s shared-bank=%zu windows=%d prefetch=%d",
+            decode ? "decode" : "prefill", decode ? retained : size_t(pimpl->n_slots),
+            pimpl->decode_window, pimpl->prefetch_slots);
+}
+
 void llama_moe_slot_runtime::ensure_unparked() {
     pimpl->ensure_unparked();
 }
@@ -2493,7 +2551,10 @@ void llama_moe_slot_runtime::process(
         const ggml_tensor * expert_ids,
         ggml_tensor * slot_ids,
         const ggml_tensor * lookahead_pred) {
-    pimpl->join_demand();
+    // A layer owns its read job. The previous layer is synchronized by its GPU dependency.
+    if (expert_ids->ne[1] > pimpl->window_max_rows) pimpl->join_demand();
+    pimpl->demand_next_layer = -1;
+    pimpl->demand_next.clear();
     pimpl->ensure_unparked();
     if (!uses_layer(layer) ||
         expert_ids->type != GGML_TYPE_I32 ||
@@ -2527,7 +2588,7 @@ void llama_moe_slot_runtime::process(
     // 上限由 window_max_rows 按缓存区容量夹紧（见 resolve_decode_window），
     // 「并集装不下」的风险在那里就被消掉，不会落到这里的运行期。
     const bool window_mode = pimpl->decode_window > 0 && n_rows <= pimpl->window_max_rows;
-    const bool lookahead_step = pimpl->lookahead.enabled && decode;
+    const bool lookahead_step = pimpl->lookahead.enabled && window_mode;
     // Prefill overwrites the same storage: finish all previous speculative reads first.
     if (!window_mode && pimpl->was_window) pimpl->lookahead.drain();
 
@@ -2630,7 +2691,7 @@ void llama_moe_slot_runtime::process(
         requested[experts[i]] = 1;
     }
 
-    if (pimpl->lookahead.enabled && !decode) {
+    if (pimpl->lookahead.enabled && !window_mode) {
         pimpl->lookahead.reset();
     }
     // 非窗口模式：在这里取预读结果（命中已在乒乓区，需搬到目标 slot）。
@@ -2797,21 +2858,6 @@ void llama_moe_slot_runtime::process(
     }
     pimpl->unique_sum.fetch_add(n_unique, std::memory_order_relaxed);
 
-    const llama_moe_slot_runtime::impl::install_timing timing =
-        (window_mode && decode && !pending.empty())
-        ? pimpl->start_demand(state, pending)
-        : pipelined_prefill
-            ? pimpl->install_prefill_pipeline(layer, pending)
-            : pimpl->install_pending(state, pending, window_mode);
-    pimpl->install_ns.fetch_add(timing.wall_ns, std::memory_order_relaxed);
-
-    if (!pending.empty()) {
-        // 仅统计，不影响读取路径。按层取增量，避免 cur 累计后重复计数。
-        const auto st = llama_moe_slot_runtime::impl::accumulate_runs(pending);
-        llama_moe_slot_runtime::impl::add_runs(pimpl->cur.runs, st);
-        llama_moe_slot_runtime::impl::add_runs(pimpl->g_runs, st);
-    }
-
     if (lookahead_step && lookahead_pred) {
         std::vector<int32_t> pred;
         pimpl->read_i32_ids(lookahead_pred, pred);
@@ -2842,7 +2888,7 @@ void llama_moe_slot_runtime::process(
                                                  std::memory_order_relaxed);
 
         if (!need_read.empty()) {
-            if (window_mode && decode && !pending.empty()) {
+            if (window_mode && !pending.empty()) {
                 pimpl->demand_next_layer = layer + 1;
                 pimpl->demand_next = std::move(need_read);
             } else {
@@ -2856,6 +2902,21 @@ void llama_moe_slot_runtime::process(
         if (pimpl->sweep_fp && layer + 1 < (int) pimpl->sweep_pred.size()) {
             pimpl->sweep_pred[layer + 1] = pred;
         }
+    }
+
+    const llama_moe_slot_runtime::impl::install_timing timing =
+        (window_mode && !pending.empty())
+        ? pimpl->start_demand(state, pending)
+        : pipelined_prefill
+            ? pimpl->install_prefill_pipeline(layer, pending)
+            : pimpl->install_pending(state, pending, window_mode);
+    pimpl->install_ns.fetch_add(timing.wall_ns, std::memory_order_relaxed);
+
+    if (!pending.empty()) {
+        // 仅统计，不影响读取路径。按层取增量，避免 cur 累计后重复计数。
+        const auto st = llama_moe_slot_runtime::impl::accumulate_runs(pending);
+        llama_moe_slot_runtime::impl::add_runs(pimpl->cur.runs, st);
+        llama_moe_slot_runtime::impl::add_runs(pimpl->g_runs, st);
     }
 
     // 命中率扫描：decode 记录整批的 E（真实用到）；prefill 只记**最后一个 token** 的 E
@@ -2949,6 +3010,15 @@ void llama_moe_slot_runtime::process(
             slots[i] >= state.window_start + (state.window_width > 0
                         ? state.window_width - pimpl->prefetch_slots : pimpl->decode_window)) {
             pimpl->lookahead.n_used_from_pf.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    // The sign encodes readiness only for the guarded Metal decode graph.
+    // Cache maps and replacement ages retain their original positive slot IDs.
+    if (window_mode && slot_ids->op_params[15] == 0x4c4553) {
+        for (const auto & item : pending) {
+            for (size_t pos = 0; pos < slots.size(); ++pos)
+                if (experts[pos] == item.expert) slots[pos] = -slots[pos] - 1;
         }
     }
     {

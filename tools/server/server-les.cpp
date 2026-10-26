@@ -10,6 +10,7 @@
 #include "llama.h"
 
 #include <atomic>
+#include <algorithm>
 #include <chrono>
 #include <csignal>
 #include <iostream>
@@ -33,6 +34,18 @@ int main(int argc, char ** argv) {
             argc, argv, params, LLAMA_EXAMPLE_SERVER)) {
         return 1;
     }
+
+    if (params.n_parallel != 1 || std::any_of(params.speculative.types.begin(), params.speculative.types.end(),
+            [](common_speculative_type type) { return type != COMMON_SPECULATIVE_TYPE_NONE; }) ||
+        params.moe_experts.empty() || params.les_decode_bank >= params.les_prefill_bank) {
+        std::cerr << "Adaptive LES requires parallel=1, spec-type=none, MoE experts, and decode bank < prefill bank\n";
+        return 1;
+    }
+    params.n_batch = params.n_ubatch = params.les_prefill_max_tokens;
+    params.moe_slot_bank = params.les_prefill_bank;
+    setenv("LLAMA_LES_DECODE_BANK", std::to_string(params.les_decode_bank).c_str(), 1);
+    std::cerr << "LES adaptive: prefill-max=" << params.n_ubatch
+              << " shared-bank=" << params.les_prefill_bank << " -> " << params.les_decode_bank << "\n";
 
     // Use a single inference slot by default.
     if (params.n_parallel < 0) {

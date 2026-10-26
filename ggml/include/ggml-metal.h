@@ -62,6 +62,11 @@ GGML_BACKEND_API ggml_backend_reg_t ggml_backend_metal_reg(void);
 GGML_BACKEND_API bool ggml_backend_metal_buffer_park  (ggml_backend_buffer_t buffer);
 GGML_BACKEND_API bool ggml_backend_metal_buffer_unpark(ggml_backend_buffer_t buffer);
 
+// Discard owned expert data and wrap only these sorted byte ranges. GPU must be idle.
+// n_ranges=0 restores the complete allocation; tensor addresses remain stable.
+GGML_BACKEND_API bool ggml_backend_metal_buffer_active_ranges(
+    ggml_backend_buffer_t buffer, const size_t * offsets, const size_t * sizes, size_t n_ranges);
+
 #ifdef __cplusplus
 }
 #endif

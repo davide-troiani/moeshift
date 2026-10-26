@@ -195,6 +195,12 @@ bool ggml_backend_metal_buffer_unpark(ggml_backend_buffer_t buffer) {
     return ggml_metal_buffer_unpark((ggml_metal_buffer_t) buffer->context);
 }
 
+bool ggml_backend_metal_buffer_active_ranges(ggml_backend_buffer_t buffer,
+        const size_t * offsets, const size_t * sizes, size_t n_ranges) {
+    return buffer && ggml_backend_buffer_is_metal(buffer) &&
+        ggml_metal_buffer_active_ranges((ggml_metal_buffer_t) buffer->context, offsets, sizes, n_ranges);
+}
+
 //
 // buffer types
 //
@@ -922,6 +928,10 @@ static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const 
 
     if (strcmp(name, "ggml_backend_dev_buffer_type_alloc_only") == 0) {
         return (void *)ggml_backend_metal_reg_buffer_type_alloc_only;
+    }
+
+    if (strcmp(name, "ggml_backend_metal_buffer_active_ranges") == 0) {
+        return (void *)ggml_backend_metal_buffer_active_ranges;
     }
 
     if (strcmp(name, "ggml_backend_metal_buffer_park") == 0) {

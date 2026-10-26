@@ -1,5 +1,7 @@
 #pragma once
 #include "llama-model.h"
+#include "llama-moe-protected-cache.h"
+#include <cstdlib>
 #include <map>
 
 // Shared prefill banks and per-layer decode windows, grouped by family and quantization.
@@ -19,7 +21,12 @@ private:
     std::map<std::pair<ggml_type, size_t>, std::vector<int>> groups[4];
     std::map<std::string, int64_t> group_slots;
     int64_t width_of(int il) const {
-        return dec_enabled && il >= 0 && il < (int) layer_c.size() ? layer_c[il] + k_pf : 0;
+        if (!dec_enabled || il < 0 || il >= (int) layer_c.size()) return 0;
+        const char * unified = std::getenv("LLAMA_MOE_PREFETCH_UNIFIED");
+        const bool protected_cache = model.arch == LLM_ARCH_QWEN4EXP &&
+            std::getenv("LLAMA_LES_DECODE_BANK") && layer_c[il] == 12 && k_pf == 3 &&
+            !(unified && *unified == '0');
+        return layer_c[il] + k_pf + (protected_cache ? les_protected_slots : 0);
     }
     int64_t slots_for(const LLM_TN_IMPL & name) const {
         const auto it = group_slots.find(name.str());

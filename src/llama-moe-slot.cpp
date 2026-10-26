@@ -1,4 +1,5 @@
 #include "llama-moe-slot.h"
+#include "llama-moe-protected-cache.h"
 
 #include "ggml-backend.h"
 #include "llama-impl.h"
@@ -517,6 +518,7 @@ struct llama_moe_slot_runtime::impl {
         std::vector<int32_t> expert_to_slot;
         std::vector<uint64_t> slot_age;
         uint64_t age = 0;
+        les_protected_cache protected_cache;
         std::mutex mutex;
     };
     struct map_userdata {
@@ -834,6 +836,10 @@ install_timing start_demand(
                 if (fail.empty()) {
                     finalize_pack(state.dec_bindings, state.dec_pack_order, state.dec_pack_ok,
                                   state.dec_pack_base, state.dec_pack_stride, state.dec_pack_path);
+                    if (model.arch == LLM_ARCH_QWEN4EXP && std::getenv("LLAMA_LES_DECODE_BANK") &&
+                        prefetch_unified && layer_width[il] == 15 && state.window_width == 15 + les_protected_slots) {
+                        state.protected_cache.configure(15, state.window_width, n_expert);
+                    }
                     n_dec++;
                 }
             }
@@ -878,6 +884,7 @@ install_timing start_demand(
         }
         // expert_to_slot 不能整体清：pending 的专家此时还没登记，所以直接全清是安全的。
         std::fill(st.expert_to_slot.begin(), st.expert_to_slot.end(), kSlotFree);
+        st.protected_cache.reset(st.slot_to_expert);
     }
 
     /// 预读：把一个预测专家读进**目标层自己的窗口**，与缓存共用同一片 slot 池。
@@ -915,7 +922,11 @@ install_timing start_demand(
                                         : (prefetch_unified ? lo : st.window_start + c_il);
 
         int32_t slot = -1;
-        for (int32_t cand = from; cand < hi; ++cand) {
+        if (st.protected_cache.enabled() && !cache_only) {
+            slot = st.protected_cache.miss(expert, st.slot_to_expert, st.slot_age, {}, {});
+            if (slot < 0) return -1;
+        }
+        for (int32_t cand = from; slot < 0 && cand < hi; ++cand) {
             if (st.slot_to_expert[(size_t) cand] == kSlotFree) {
                 slot = cand;
                 break;
@@ -2484,7 +2495,8 @@ void llama_moe_slot_runtime::set_adaptive_phase(bool decode) {
             const size_t offset = (char *) base.first->data - (char *) ggml_backend_buffer_get_base(buffer.first);
             const size_t discard = (pimpl->n_slots - retained) * base.second;
             if (discard >= ggml_nbytes(base.first)) throw std::runtime_error("adaptive LES bank exceeds allocation");
-            ranges.emplace_back(offset + discard, ggml_nbytes(base.first) - discard);
+            if (decode) ranges.emplace_back(offset + discard, ggml_nbytes(base.first) - discard);
+            else ranges.emplace_back(offset, pimpl->n_slots * base.second);
         }
         std::sort(ranges.begin(), ranges.end());
         std::vector<size_t> offsets, sizes;
@@ -2493,11 +2505,23 @@ void llama_moe_slot_runtime::set_adaptive_phase(bool decode) {
         using ranges_fn = bool (*)(ggml_backend_buffer_t, const size_t *, const size_t *, size_t);
         auto fn = (ranges_fn) ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(dev),
             "ggml_backend_metal_buffer_active_ranges");
-        if (!fn || !fn(buffer.first, offsets.data(), sizes.data(), decode ? offsets.size() : 0))
+        if (!fn || !fn(buffer.first, offsets.data(), sizes.data(), offsets.size()))
             throw std::runtime_error("adaptive LES cannot release/restore expert Metal memory");
     }
     pimpl->was_window = false;
     pimpl->adaptive_decode = decode;
+    if (decode) {
+        size_t extra_bytes = 0;
+        int protected_layers = 0;
+        for (const auto & state : pimpl->layers) {
+            if (!state.protected_cache.enabled()) continue;
+            ++protected_layers;
+            for (const auto & binding : state.dec_bindings)
+                extra_bytes += les_protected_slots * binding.entry->bytes_per_expert;
+        }
+        if (protected_layers) moe_log("protected-cache: layers=%d recent=15 protected=23 total=38 decay=128 extra_bytes=%zu",
+            protected_layers, extra_bytes);
+    }
     moe_log("adaptive phase=%s shared-bank=%zu windows=%d prefetch=%d",
             decode ? "decode" : "prefill", decode ? retained : size_t(pimpl->n_slots),
             pimpl->decode_window, pimpl->prefetch_slots);
@@ -2757,6 +2781,7 @@ void llama_moe_slot_runtime::process(
         }
     }
 
+    if (window_mode && state.protected_cache.enabled()) state.protected_cache.begin_step();
     std::vector<llama_moe_slot_runtime::impl::pending_install> pending;
     pending.reserve((size_t) std::min((int32_t) pimpl->n_slots, pimpl->n_expert));
 
@@ -2782,12 +2807,19 @@ void llama_moe_slot_runtime::process(
     for (size_t pos = 0; pos < count; ++pos) {
         const int32_t expert = experts[pos];
         if (state.expert_to_slot[expert] >= 0) {
+            if (window_mode && state.protected_cache.enabled())
+                state.protected_cache.hit(expert, state.expert_to_slot[expert],
+                    state.slot_to_expert, state.slot_age, requested, keep);
             slots[pos] = state.expert_to_slot[expert];   // 已驻留，无需读取
             continue;
         }
 
         int32_t slot = -1;
-        for (int32_t candidate = alloc_lo; candidate < alloc_hi; ++candidate) {
+        if (window_mode && state.protected_cache.enabled()) {
+            slot = state.protected_cache.miss(expert, state.slot_to_expert, state.slot_age, requested, keep);
+            if (slot < 0) throw std::runtime_error("Protected cache has no unpinned recent slot");
+        }
+        for (int32_t candidate = alloc_lo; slot < 0 && candidate < alloc_hi; ++candidate) {
             if (state.slot_to_expert[candidate] == kSlotFree) {
                 slot = candidate;
                 break;
@@ -3013,6 +3045,12 @@ void llama_moe_slot_runtime::process(
         }
     }
 
+    if (window_mode && layer == 0 && state.protected_cache.enabled() && state.protected_cache.steps % 32 == 0)
+        moe_log("protected-cache layer0 step=%llu hits=%llu admissions=%llu recent=%d protected=%d",
+            (unsigned long long) state.protected_cache.steps,
+            (unsigned long long) state.protected_cache.protected_hits,
+            (unsigned long long) state.protected_cache.admissions,
+            state.protected_cache.count(1), state.protected_cache.count(2));
     // The sign encodes readiness only for the guarded Metal decode graph.
     // Cache maps and replacement ages retain their original positive slot IDs.
     if (window_mode && slot_ids->op_params[15] == 0x4c4553) {

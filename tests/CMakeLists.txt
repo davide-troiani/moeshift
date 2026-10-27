@@ -332,3 +332,7 @@ else()
     target_compile_options(test-les-protected-cache PRIVATE -UNDEBUG)
 endif()
 llama_test(test-les-protected-cache)
+
+llama_build(test-kv-grow.cpp)
+target_include_directories(test-kv-grow PRIVATE ${CMAKE_SOURCE_DIR}/src)
+llama_test(test-kv-grow)

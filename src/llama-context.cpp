@@ -431,6 +431,13 @@ llama_context::~llama_context() {
     ggml_opt_free(opt_ctx);
 }
 
+void llama_context::invalidate_memory_graph() {
+    synchronize();
+    ggml_backend_sched_reset(sched.get());
+    gf_res_prev->reset();
+    gf_res_reserve->reset();
+}
+
 void llama_context::sched_reserve() {
     if (!sched_need_reserve) {
         return;

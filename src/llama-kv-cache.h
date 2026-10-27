@@ -159,6 +159,8 @@ public:
     //
 
     uint32_t get_size()     const;
+    void set_context(llama_context * ctx) { grow_context = ctx; }
+    bool ensure_capacity(uint32_t needed);
     uint32_t get_n_stream() const;
 
     bool get_has_shift() const;
@@ -236,6 +238,9 @@ private:
     };
 
     bool v_trans = true;  // the value tensor is transposed
+    bool grow_enabled = false;
+    uint32_t allocated_cells = 0;
+    llama_context * grow_context = nullptr;
 
     const uint32_t n_seq_max = 1;
     const uint32_t n_stream  = 1;

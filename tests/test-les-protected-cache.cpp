@@ -3,11 +3,11 @@
 #include <random>
 #include <set>
 
-int main() {
+static void test_capacity(int protected_slots) {
     les_protected_cache cache;
-    cache.configure(15, 38, 512);
-    std::vector<int32_t> ids(38, -1), slots(512, -1);
-    std::vector<uint64_t> ages(38, 0);
+    cache.configure(15, 15 + protected_slots, 512);
+    std::vector<int32_t> ids(15 + protected_slots, -1), slots(512, -1);
+    std::vector<uint64_t> ages(15 + protected_slots, 0);
     std::mt19937 random(42);
     uint64_t age = 0;
     auto install = [&](int expert, const std::vector<uint8_t> & requested) {
@@ -43,7 +43,7 @@ int main() {
         assert(ids[pending] == -2);
         ids[pending] = -1;
         cache.reconcile(ids);
-        assert(cache.count(1) <= 15 && cache.count(2) <= 23);
+        assert(cache.count(1) <= 15 && cache.count(2) <= protected_slots);
         for (size_t i = 0; i < ids.size(); ++i) {
             if (ids[i] >= 0) assert(slots[ids[i]] == int(i));
             else assert(!cache.group[i]);
@@ -59,5 +59,18 @@ int main() {
     cache.steps = 128;
     cache.begin_step();
     assert(cache.frequency[0] == 4 && cache.steps == 129);
-    std::cout << "Protected cache invariants passed (3000 steps)\n";
+}
+
+int main() {
+    assert(les_parse_protected_slots(nullptr, 497) == 23);
+    assert(les_parse_protected_slots("0", 497) == 0);
+    assert(les_parse_protected_slots("497", 497) == 497);
+    for (const char * invalid : {"", "-1", "+1", "1x", "498", "999999999999999999999999"}) {
+        bool rejected = false;
+        try { (void) les_parse_protected_slots(invalid, 497); }
+        catch (const std::invalid_argument &) { rejected = true; }
+        assert(rejected);
+    }
+    for (int slots : {1, 23, 64}) test_capacity(slots);
+    std::cout << "Protected cache invariants passed for 1, 23 and 64 slots\n";
 }

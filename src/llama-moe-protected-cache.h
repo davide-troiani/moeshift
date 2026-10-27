@@ -2,9 +2,28 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <cstdlib>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
-constexpr int les_protected_slots = 23;
+inline int les_parse_protected_slots(const char * value, int maximum) {
+    if (!value) return 23;
+    if (!*value || *value < '0' || *value > '9')
+        throw std::invalid_argument("LLAMA_MOE_PROTECTED_SLOTS must be a nonnegative integer");
+    char * end = nullptr;
+    const long slots = std::strtol(value, &end, 10);
+    if (*end || slots > maximum)
+        throw std::invalid_argument("LLAMA_MOE_PROTECTED_SLOTS exceeds the supported per-layer capacity " + std::to_string(maximum));
+    return int(slots);
+}
+
+inline int les_protected_slots(int maximum) {
+    const int slots = les_parse_protected_slots(std::getenv("LLAMA_MOE_PROTECTED_SLOTS"), maximum);
+    if (slots > maximum)
+        throw std::invalid_argument("default protected cache exceeds the per-layer capacity " + std::to_string(maximum));
+    return slots;
+}
 
 // Logical ownership changes; expert bytes and tensor addresses never move.
 struct les_protected_cache {
@@ -15,7 +34,7 @@ struct les_protected_cache {
 
     bool enabled() const { return recent_limit != 0; }
     void configure(int recent, int width, int experts) {
-        assert(recent > 0 && width == recent + les_protected_slots);
+        assert(recent > 0 && width > recent);
         recent_limit = recent;
         group.assign(width, 0);
         frequency.assign(experts, 0);

@@ -837,7 +837,7 @@ install_timing start_demand(
                     finalize_pack(state.dec_bindings, state.dec_pack_order, state.dec_pack_ok,
                                   state.dec_pack_base, state.dec_pack_stride, state.dec_pack_path);
                     if (model.arch == LLM_ARCH_QWEN4EXP && std::getenv("LLAMA_LES_DECODE_BANK") &&
-                        prefetch_unified && layer_width[il] == 15 && state.window_width == 15 + les_protected_slots) {
+                        prefetch_unified && layer_width[il] == 15 && state.window_width > 15) {
                         state.protected_cache.configure(15, state.window_width, n_expert);
                     }
                     n_dec++;
@@ -2513,14 +2513,16 @@ void llama_moe_slot_runtime::set_adaptive_phase(bool decode) {
     if (decode) {
         size_t extra_bytes = 0;
         int protected_layers = 0;
+        int protected_slots = 0;
         for (const auto & state : pimpl->layers) {
             if (!state.protected_cache.enabled()) continue;
             ++protected_layers;
+            protected_slots = state.window_width - state.protected_cache.recent_limit;
             for (const auto & binding : state.dec_bindings)
-                extra_bytes += les_protected_slots * binding.entry->bytes_per_expert;
+                extra_bytes += size_t(protected_slots) * binding.entry->bytes_per_expert;
         }
-        if (protected_layers) moe_log("protected-cache: layers=%d recent=15 protected=23 total=38 decay=128 extra_bytes=%zu",
-            protected_layers, extra_bytes);
+        if (protected_layers) moe_log("protected-cache: layers=%d recent=15 protected=%d total=%d decay=128 extra_bytes=%zu (%.4f MB/slot across layers)",
+            protected_layers, protected_slots, 15 + protected_slots, extra_bytes, extra_bytes / (double) protected_slots / 1e6);
     }
     moe_log("adaptive phase=%s shared-bank=%zu windows=%d prefetch=%d",
             decode ? "decode" : "prefill", decode ? retained : size_t(pimpl->n_slots),

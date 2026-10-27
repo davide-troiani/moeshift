@@ -26,7 +26,8 @@ private:
         const bool protected_cache = model.arch == LLM_ARCH_QWEN4EXP &&
             std::getenv("LLAMA_LES_DECODE_BANK") && layer_c[il] == 12 && k_pf == 3 &&
             !(unified && *unified == '0');
-        return layer_c[il] + k_pf + (protected_cache ? les_protected_slots : 0);
+        const int maximum = int(std::min<int64_t>({prefill_cap, model.hparams.n_expert, 1024})) - 15;
+        return layer_c[il] + k_pf + (protected_cache ? les_protected_slots(maximum) : 0);
     }
     int64_t slots_for(const LLM_TN_IMPL & name) const {
         const auto it = group_slots.find(name.str());

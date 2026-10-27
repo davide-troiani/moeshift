@@ -923,7 +923,7 @@ install_timing start_demand(
 
         int32_t slot = -1;
         if (st.protected_cache.enabled() && !cache_only) {
-            slot = st.protected_cache.miss(expert, st.slot_to_expert, st.slot_age, {}, {});
+            slot = st.protected_cache.miss(st.slot_to_expert, st.slot_age, {}, {});
             if (slot < 0) return -1;
         }
         for (int32_t cand = from; slot < 0 && cand < hi; ++cand) {
@@ -2521,8 +2521,9 @@ void llama_moe_slot_runtime::set_adaptive_phase(bool decode) {
             for (const auto & binding : state.dec_bindings)
                 extra_bytes += size_t(protected_slots) * binding.entry->bytes_per_expert;
         }
-        if (protected_layers) moe_log("protected-cache: layers=%d recent=15 protected=%d total=%d decay=128 extra_bytes=%zu (%.4f MB/slot across layers)",
-            protected_layers, protected_slots, 15 + protected_slots, extra_bytes, extra_bytes / (double) protected_slots / 1e6);
+        if (protected_layers) moe_log("protected-cache: layers=%d recent=15 protected=%d total=%d policy=demand-lrfu half_life=32 extra_bytes=%zu (%.4f MB/slot across layers)",
+            protected_layers, protected_slots, 15 + protected_slots,
+            extra_bytes, extra_bytes / (double) protected_slots / 1e6);
     }
     moe_log("adaptive phase=%s shared-bank=%zu windows=%d prefetch=%d",
             decode ? "decode" : "prefill", decode ? retained : size_t(pimpl->n_slots),
@@ -2783,7 +2784,7 @@ void llama_moe_slot_runtime::process(
         }
     }
 
-    if (window_mode && state.protected_cache.enabled()) state.protected_cache.begin_step();
+    if (window_mode && state.protected_cache.enabled()) state.protected_cache.begin_step(requested);
     std::vector<llama_moe_slot_runtime::impl::pending_install> pending;
     pending.reserve((size_t) std::min((int32_t) pimpl->n_slots, pimpl->n_expert));
 
@@ -2810,7 +2811,7 @@ void llama_moe_slot_runtime::process(
         const int32_t expert = experts[pos];
         if (state.expert_to_slot[expert] >= 0) {
             if (window_mode && state.protected_cache.enabled())
-                state.protected_cache.hit(expert, state.expert_to_slot[expert],
+                state.protected_cache.hit(state.expert_to_slot[expert],
                     state.slot_to_expert, state.slot_age, requested, keep);
             slots[pos] = state.expert_to_slot[expert];   // 已驻留，无需读取
             continue;
@@ -2818,7 +2819,7 @@ void llama_moe_slot_runtime::process(
 
         int32_t slot = -1;
         if (window_mode && state.protected_cache.enabled()) {
-            slot = state.protected_cache.miss(expert, state.slot_to_expert, state.slot_age, requested, keep);
+            slot = state.protected_cache.miss(state.slot_to_expert, state.slot_age, requested, keep);
             if (slot < 0) throw std::runtime_error("Protected cache has no unpinned recent slot");
         }
         for (int32_t candidate = alloc_lo; slot < 0 && candidate < alloc_hi; ++candidate) {

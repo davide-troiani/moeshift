@@ -44,8 +44,12 @@ struct les_protected_cache {
         std::fill(frequency.begin(), frequency.end(), 0);
         steps = protected_hits = admissions = 0;
     }
-    void begin_step() {
-        if (steps && steps % 128 == 0) for (auto & f : frequency) f *= 0.5f;
+    void begin_step(const std::vector<uint8_t> & requested) {
+        assert(requested.size() == frequency.size());
+        // shortcut: fixed 32-token half-life, calibrate with routing traces if workload performance requires it.
+        constexpr float decay = 0.9785720621f; // 2^(-1/32)
+        for (size_t e = 0; e < frequency.size(); ++e)
+            frequency[e] = decay * frequency[e] + (requested[e] ? 1.0f : 0.0f);
         ++steps;
     }
     void reconcile(const std::vector<int32_t> & ids) {
@@ -69,12 +73,12 @@ struct les_protected_cache {
         }
         return -1;
     }
-    void hit(int expert, int slot, const std::vector<int32_t> & ids,
+    void hit(int slot, const std::vector<int32_t> & ids,
              const std::vector<uint64_t> & ages, const std::vector<uint8_t> & requested,
              const std::vector<uint8_t> & predicted) {
         reconcile(ids);
         if (group[slot] != 2) return;
-        ++frequency[expert]; ++protected_hits;
+        ++protected_hits;
         if (count(1) >= recent_limit) {
             const int old = victim(1, ids, ages, requested, predicted);
             if (old < 0) return; // All recent slots are pinned by current work.
@@ -82,11 +86,10 @@ struct les_protected_cache {
         }
         group[slot] = 1;
     }
-    int miss(int expert, const std::vector<int32_t> & ids,
+    int miss(const std::vector<int32_t> & ids,
              const std::vector<uint64_t> & ages, const std::vector<uint8_t> & requested,
              const std::vector<uint8_t> & predicted) {
         reconcile(ids);
-        ++frequency[expert];
         int free = -1;
         for (size_t i = 0; i < group.size(); ++i) if (ids[i] == -1) { free = int(i); break; }
         if (count(1) < recent_limit && free >= 0) { group[free] = 1; return free; }

@@ -1,4 +1,5 @@
 #include "../src/llama-moe-protected-cache.h"
+#include <cmath>
 #include <iostream>
 #include <random>
 #include <set>
@@ -13,9 +14,9 @@ static void test_capacity(int protected_slots) {
     auto install = [&](int expert, const std::vector<uint8_t> & requested) {
         int slot = slots[expert];
         if (slot >= 0) {
-            cache.hit(expert, slot, ids, ages, requested, {});
+            cache.hit(slot, ids, ages, requested, {});
         } else {
-            slot = cache.miss(expert, ids, ages, requested, {});
+            slot = cache.miss(ids, ages, requested, {});
             assert(slot >= 0);
             assert(ids[slot] != -2);
             assert(ids[slot] < 0 || requested.empty() || !requested[ids[slot]]);
@@ -27,11 +28,11 @@ static void test_capacity(int protected_slots) {
         return slot;
     };
     for (int step = 0; step < 3000; ++step) {
-        cache.begin_step();
         std::set<int> used;
         while (used.size() < 10) used.insert(random() % 100);
         std::vector<uint8_t> requested(512, 0);
         for (int expert : used) requested[expert] = 1;
+        cache.begin_step(requested);
         for (int expert : used) install(expert, requested);
         for (int expert : used) assert(slots[expert] >= 0 && ids[slots[expert]] == expert);
 
@@ -57,8 +58,53 @@ static void test_capacity(int protected_slots) {
     }
     cache.frequency[0] = 8;
     cache.steps = 128;
-    cache.begin_step();
-    assert(cache.frequency[0] == 4 && cache.steps == 129);
+    for (int i = 0; i < 32; ++i) cache.begin_step(std::vector<uint8_t>(512, 0));
+    assert(std::abs(cache.frequency[0] - 4) < 0.0001f && cache.steps == 160);
+}
+
+static void test_demand_lrfu() {
+    les_protected_cache cache;
+    cache.configure(2, 4, 6);
+    std::vector<int32_t> ids = {0, 1, 2, 3};
+    std::vector<uint64_t> ages = {1, 2, 3, 4};
+    cache.group = {1, 1, 2, 2};
+    std::vector<uint8_t> requested = {1, 0, 1, 0, 1, 0};
+    cache.begin_step(requested);
+    const auto scores = cache.frequency;
+    assert((scores == std::vector<float>{1, 0, 1, 0, 1, 0}));
+    cache.hit(0, ids, ages, requested, {}); // Recent hit.
+    cache.hit(2, ids, ages, requested, {}); // Protected hit.
+    assert(cache.miss(ids, ages, requested, {}) == -1); // Both recent slots are pinned.
+    assert(cache.frequency == scores); // Count the entire router set once, before allocation.
+    for (int i = 0; i < 200; ++i) {
+        const int prefetched = cache.miss(ids, ages, {}, {});
+        assert(prefetched >= 0);
+        ids[prefetched] = -2;
+        assert(cache.frequency == scores); // Unconsumed and cancelled prefetches earn no credit.
+        ids[prefetched] = -1;
+    }
+
+    ids = {0, 1, 2, 3};
+    cache.reset(ids);
+    cache.group = {1, 1, 2, 2};
+    requested = {0, 0, 1, 0, 0, 0};
+    for (int i = 0; i < 256; ++i) cache.begin_step(requested);
+    assert(cache.frequency[2] > 40);
+    requested = {1, 0, 0, 0, 0, 0};
+    for (int i = 0; i < 33; ++i) cache.begin_step(requested);
+    assert(cache.frequency[0] > cache.frequency[2]); // New routing phase overtakes the old hot expert.
+    cache.frequency[3] = cache.frequency[2] + 1;
+    assert(cache.miss(ids, ages, {}, {}) == 2); // Admit the recent hot expert over stale history.
+
+    cache.group = {1, 1, 2, 2};
+    std::vector<uint8_t> predicted = {0, 0, 1, 0, 0, 0};
+    assert(cache.victim(2, ids, ages, {}, predicted) == 3);
+    requested = {0, 0, 1, 1, 0, 0};
+    assert(cache.victim(2, ids, ages, requested, predicted) == -1);
+    ids = {-2, -1, -1, -1};
+    cache.reset(ids);
+    assert(cache.count(1) == 1 && cache.count(2) == 0 && cache.steps == 0);
+    for (float f : cache.frequency) assert(f == 0);
 }
 
 int main() {
@@ -71,6 +117,7 @@ int main() {
         catch (const std::invalid_argument &) { rejected = true; }
         assert(rejected);
     }
-    for (int slots : {1, 23, 64}) test_capacity(slots);
-    std::cout << "Protected cache invariants passed for 1, 23 and 64 slots\n";
+    for (int slots : {1, 23, 32, 64}) test_capacity(slots);
+    test_demand_lrfu();
+    std::cout << "Protected cache invariants passed at 1, 23, 32 and 64 slots; demand LRFU accounting and phase change passed\n";
 }

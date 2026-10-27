@@ -119,99 +119,10 @@ count a complete Qwen4Exp top-10 router set on the per-layer token clock, using
 an exact 512-entry score vector rather than an approximate sketch. No routing,
 expert weights, precision or accumulation order changes.
 
-### What the supplied log establishes
-
-`server_log_degradating.txt` uses 48 layers, 512 experts, top-10 routing and
-**32 protected slots**, although its pasted command does not set that variable.
-The server's `tg` is cumulative: its peak is 10.71 tokens/s at token 408 and
-its last value is 9.89 at token 1281 (a 7.7% decrease). Differences between
-timestamped progress records show a non-monotonic slowdown:
-
-| Generated token interval | Tokens/s from timestamp differences |
-|---|---:|
-| 201–408 | 11.35 |
-| 408–641 | 9.64 |
-| 641–901 | 9.53 |
-| 901–1147 | 10.02 |
-| 1147–1281 | 8.72 |
-
-The sampled `decode` records' hit ratio drops from 76.8% (steps 32–384) to
-58.8% (1184–1280). These are **sparse per-token snapshots**, not window-wide hit
-rates. `readall / span`, which does cover the logged spans, rises from about
-256 to 385 MiB/token across those ranges. This supports investigating expert
-reuse, but does not identify its cause: there are no per-expert routing traces,
-physical-footprint samples, thermal measurements or separate attention timings.
-Layer-0 `protected-cache hits` only counts protected-tier hits; it is not an
-all-layer cache hit rate. Asynchronous reads can coexist with `pread_wall=0`.
-
-No online replacement policy can guarantee constant decode speed or zero misses
-at fixed capacity. Even an offline oracle cannot remove compulsory reads;
-attention cost, memory pressure and storage/thermal behavior are outside this
-policy. The expected benefit here is faster adaptation to changes in expert
-demand, not a demonstrated elimination of the reported degradation.
-
 ### Memory and trying the prototype
 
 The score vector already exists: 512 floats × 48 layers = 98,304 bytes for
 the protected cache. No new expert slots, tensor buffers or history arrays are allocated.
 At 32 protected slots, the protected tensors remain 2,682,060,800 bytes; at the
 unchanged default of 23 they remain 1,927,731,200 bytes. **Equal allocations do
-not prove a process footprint below 10,000,000,000 bytes.** The supplied log's
-`metal_total` is allocation accounting, not a physical-footprint measurement.
-Check the whole process, including startup and prefill, against that budget;
-do not increase slots to obtain better cache results.
-
-From the parent MiniCPM-V-Apps directory, build separately:
-
-```sh
-cmake -S llama.cpp-omni -B build-protected-lrfu \
-  -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=ON \
-  -DGGML_METAL=ON -DGGML_NATIVE=ON
-cmake --build build-protected-lrfu --target llama-les-server test-les-protected-cache -j 8
-```
-
-Use the server command/environment in the supplied log, changing only its
-executable to `./build-protected-lrfu/bin/llama-les-server` and explicitly adding:
-
-```sh
-export LLAMA_MOE_PROTECTED_SLOTS=32
-```
-
-Check the first decode phase log for
-`recent=15 protected=32 total=47 policy=demand-lrfu half_life=32`.
-Use a **single new long request with a different prompt** (for example, a detailed
-comparison of database indexing, query planning and recovery, up to 2048 generated
-tokens). Keep context capacity, quantization, prefetch and hardware conditions
-fixed. Measure throughput from differences between timestamped `n_decoded`
-records, alongside `readall/span` and physical footprint. Do not compare only
-the cumulative `tg`, nor infer a speedup by comparing different prompts.
-Stop and reject the run if it exceeds the memory budget; reducing protected
-slots is allowed but constitutes a different cache-capacity experiment.
-
-Validation performed for this prototype: standalone synthetic tests with
-AddressSanitizer/UndefinedBehaviorSanitizer, covering LRFU at 1, 23,
-32 and 64 protected slots, score accounting, decay, phase change, predictions,
-pins, pending reads, reset and map consistency. The server was built separately.
-No model inference, repeat of the supplied test, A/B/A run, throughput claim,
-full-logit comparison or physical-footprint certification was performed.
-
-## Earlier measurement (legacy policy)
-
-One candidate-only measurement on Apple M4 Pro (24 GiB), with keepalive enabled,
-context capacity 65536, and a short Italian prompt about virtual memory:
-
-| Metric | Result |
-|---|---:|
-| Prompt including chat template | 77 tokens |
-| Generated, including reasoning | 300 tokens |
-| Decode | 9.0767 tokens/s |
-| Decode time | 33.052 s |
-| Peak decode physical footprint | 9.5835 decimal GB |
-
-This is not a baseline comparison or proof of improved throughput or long-run
-stability. Full-logit equivalence was not checked. OS file cache was not cleared;
-preliminary server starts and an interrupted request preceded the completed run.
-
-The standalone `test-les-protected-cache` checks capacity, pinned requests,
-pending-read ownership, map consistency, reset, and frequency decay without a
-model or GPU.
+not prove a process footprint below 10,000,000,000 bytes.**

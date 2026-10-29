@@ -2,12 +2,14 @@
 
 **Large AI models on your Mac. Starting with 10 GB of RAM.**
 
-MoEShift lets you run Qwen 3.8 Flash Next locally on Apple Silicon, using your
-Mac's SSD to run a model that would otherwise need far more memory. Chat, write
-and code with a large language model on your own machine, with your conversations
-staying local and no cloud subscription required.
+**125 billion parameters. Up to 11 tokens per second. Under 10 GB of
+peak process memory.** MoEShift is optimized for Apple Silicon: on a Mac mini
+M4 Pro with 24 GB of unified memory, it runs Qwen 3.8 Flash Next with roughly
+half the peak process memory of Strata and processes long prompts 2.6× faster.
 
-Built on [llama.cpp](https://github.com/ggml-org/llama.cpp).
+MoEShift leaves room for your other apps, helping your Mac stay responsive during inference
+instead of grinding to a halt under memory pressure. Keep browsing, writing
+and coding while the model works—all locally, with no cloud subscription.
 
 **Alpha release.** The core runtime is working, and the project is evolving
 quickly. You may encounter rough edges; your feedback helps shape the next release. This build

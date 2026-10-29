@@ -36,17 +36,15 @@ llama_moe_tensor_loader::llama_moe_tensor_loader(llama_model_base & model, llama
     if (model.arch == LLM_ARCH_QWEN4EXP && !std::getenv("LLAMA_QWEN_SEPARATE_PREFILL_BANKS")) {
         for (int fi = 0; fi < 4; ++fi) {
             std::vector<int> members;
-            std::pair<ggml_type, size_t> largest{GGML_TYPE_F32, 0};
             for (const auto & group : groups[fi]) {
                 members.insert(members.end(), group.second.begin(), group.second.end());
-                if (group.first.second > largest.second) largest = group.first;
             }
             if (members.empty()) continue;
             std::sort(members.begin(), members.end());
             const auto * first_entry = model.moe_experts_entry(tn(fam_ids[fi], "weight", members.front()).str().c_str());
-            largest = {first_entry->type, first_entry->bytes_per_expert};
+            const auto group_key = std::make_pair(first_entry->type, first_entry->bytes_per_expert);
             groups[fi].clear();
-            groups[fi][largest] = std::move(members);
+            groups[fi][group_key] = std::move(members);
         }
     }
     // 组长（真正分配内存的那一层）-> 分配的 slot 数。非组长按 prefill 容量建，

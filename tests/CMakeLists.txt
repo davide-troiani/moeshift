@@ -340,3 +340,7 @@ llama_test(test-kv-grow)
 llama_build(test-indexer-keys.cpp)
 target_include_directories(test-indexer-keys PRIVATE ${CMAKE_SOURCE_DIR}/src)
 llama_test(test-indexer-keys)
+
+if (GGML_METAL)
+    llama_build_and_test(test-metal-moe-phases.cpp LABEL backend)
+endif()

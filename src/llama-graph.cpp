@@ -1,5 +1,6 @@
 extern thread_local struct ggml_tensor * les_parallel_ffn;
 #include "llama-graph.h"
+#include "../ggml/src/ggml-metal/ggml-metal-impl.h"
 #include "../ggml/src/ggml-impl.h"
 
 #include "llama-impl.h"
@@ -1651,25 +1652,25 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         !up_exps_b && !gate_exps_b && !down_exps_b &&
         !up_exps_s && !gate_exps_s && !down_exps_s && loras->empty()) {
         // Only this graph may emit signed readiness IDs; ordinary one-token prefill must not.
-        static_assert(sizeof(ggml_map_custom1_op_params) <= 15*sizeof(int32_t));
-        static_assert(sizeof(ggml_map_custom2_op_params) <= 15*sizeof(int32_t));
+        static_assert(sizeof(ggml_map_custom1_op_params) <= GGML_MOE_SLOT_MARKER_PARAM*sizeof(int32_t));
+        static_assert(sizeof(ggml_map_custom2_op_params) <= GGML_MOE_SLOT_MARKER_PARAM*sizeof(int32_t));
         GGML_ASSERT(selected_experts_mm->op == GGML_OP_MAP_CUSTOM1 ||
                     selected_experts_mm->op == GGML_OP_MAP_CUSTOM2);
-        selected_experts_mm->op_params[15] = 0x4c4553;
-        auto phase = [&](int ready) {
+        selected_experts_mm->op_params[GGML_MOE_SLOT_MARKER_PARAM] = GGML_MOE_SLOT_MARKER;
+        auto phase = [&](ggml_moe_phase ready) {
             ggml_tensor * up = build_lora_mm_id(up_exps, cur, selected_experts_mm);
             ggml_tensor * gate = build_lora_mm_id(gate_exps, cur, selected_experts_mm);
             ggml_tensor * down = build_lora_mm_id(down_exps,
                 ggml_swiglu_split(ctx0, gate, up), selected_experts_mm);
-            up->op_params[1] = gate->op_params[1] = down->op_params[1] = ready;
-            cb(up, ready == 1 ? "ffn_moe_ready_up" : "ffn_moe_late_up", il);
-            cb(gate, ready == 1 ? "ffn_moe_ready_gate" : "ffn_moe_late_gate", il);
-            cb(down, ready == 1 ? "ffn_moe_ready_down" : "ffn_moe_late_down", il);
+            up->op_params[GGML_MOE_PHASE_PARAM] = gate->op_params[GGML_MOE_PHASE_PARAM] = down->op_params[GGML_MOE_PHASE_PARAM] = ready;
+            cb(up, ready == GGML_MOE_PHASE_RESIDENT ? "ffn_moe_ready_up" : "ffn_moe_late_up", il);
+            cb(gate, ready == GGML_MOE_PHASE_RESIDENT ? "ffn_moe_ready_gate" : "ffn_moe_late_gate", il);
+            cb(down, ready == GGML_MOE_PHASE_RESIDENT ? "ffn_moe_ready_down" : "ffn_moe_late_down", il);
             ggml_build_forward_expand(gf, down);
             return down;
         };
-        ggml_tensor * resident = phase(1);
-        ggml_tensor * missing = phase(2);
+        ggml_tensor * resident = phase(GGML_MOE_PHASE_RESIDENT);
+        ggml_tensor * missing = phase(GGML_MOE_PHASE_MISSING);
         ggml_tensor * experts = ggml_mul(ctx0, ggml_add(ctx0, resident, missing), weights);
         cb(experts, "ffn_moe_weighted", il);
         ggml_build_forward_expand(gf, experts);

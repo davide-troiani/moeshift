@@ -1,6 +1,18 @@
 #ifndef GGML_METAL_IMPL
 #define GGML_METAL_IMPL
 
+// Shared by the graph builder, expert loader, Metal encoder and Metal kernels.
+enum ggml_moe_phase {
+    GGML_MOE_PHASE_ALL = 0,
+    GGML_MOE_PHASE_RESIDENT = 1,
+    GGML_MOE_PHASE_MISSING = 2,
+};
+enum {
+    GGML_MOE_PHASE_PARAM = 1,
+    GGML_MOE_SLOT_MARKER_PARAM = 15,
+    GGML_MOE_SLOT_MARKER = 0x4c4553,
+};
+
 // kernel parameters for mat-mat threadgroups
 //
 // TODO: become function constants

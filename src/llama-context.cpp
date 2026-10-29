@@ -1,4 +1,5 @@
 #include "llama-context.h"
+#include "../ggml/src/ggml-metal/ggml-metal-impl.h"
 
 #include "ggml.h"
 #include "llama-arch.h"
@@ -2638,7 +2639,7 @@ ggml_status llama_context::graph_compute(
     // Validate actual scheduler placement, including partial-offload fallbacks.
     for (int i = 0; i < ggml_graph_n_nodes(gf); ++i) {
         auto * node = ggml_graph_node(gf, i);
-        if (node->op != GGML_OP_MUL_MAT_ID || node->op_params[1] == 0) continue;
+        if (node->op != GGML_OP_MUL_MAT_ID || node->op_params[GGML_MOE_PHASE_PARAM] == GGML_MOE_PHASE_ALL) continue;
         auto * backend = ggml_backend_sched_get_tensor_backend(sched.get(), node);
         auto * device = backend ? ggml_backend_get_device(backend) : nullptr;
         if (!device || std::strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(device)), "MTL") != 0) {

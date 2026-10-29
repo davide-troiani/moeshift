@@ -10564,10 +10564,10 @@ kernel void kernel_mul_mv_id(
 
 
     int32_t i02 = ((device const int32_t *) (ids + iid1*args.nbi1))[idx];
-    const int phase = args.nei1 < 0 ? -args.nei1 : 0;
+    const int phase = args.nei1 < 0 ? -args.nei1 : GGML_MOE_PHASE_ALL;
     if (phase) {
         const bool pending = i02 < 0;
-        if ((phase == 1 && pending) || (phase == 2 && !pending)) {
+        if ((phase == GGML_MOE_PHASE_RESIDENT && pending) || (phase == GGML_MOE_PHASE_MISSING && !pending)) {
             // One threadgroup clears the inactive column. Other groups do no work.
             if (tgpig.x == 0 && tgpig.y == 0) {
                 device float * out = (device float *)dst + (idx + iid1*args.ne1)*args.ne0;

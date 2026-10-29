@@ -450,7 +450,7 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
     bool ready_prefix = false;
     for (int i = 0; i < gf->n_nodes; ++i) {
         if (strstr(gf->nodes[i]->name, "ffn_shexp") != NULL) ready_prefix = true;
-        if (gf->nodes[i]->op == GGML_OP_MUL_MAT_ID && gf->nodes[i]->op_params[1] != 1) {
+        if (gf->nodes[i]->op == GGML_OP_MUL_MAT_ID && gf->nodes[i]->op_params[GGML_MOE_PHASE_PARAM] != GGML_MOE_PHASE_RESIDENT) {
             if (ready_prefix && i > 0) n_main = i;
             break;
         }
@@ -635,7 +635,7 @@ void ggml_metal_graph_optimize(ggml_metal_t ctx, struct ggml_cgraph * gf) {
         // cannot move late kernels into the ready prefix's command buffer.
         int boundary = -1;
         for (int i = 0; i < gf->n_nodes; ++i) {
-            if (gf->nodes[i]->op == GGML_OP_MUL_MAT_ID && gf->nodes[i]->op_params[1] == 2) {
+            if (gf->nodes[i]->op == GGML_OP_MUL_MAT_ID && gf->nodes[i]->op_params[GGML_MOE_PHASE_PARAM] == GGML_MOE_PHASE_MISSING) {
                 boundary = i;
                 break;
             }
@@ -727,7 +727,7 @@ void ggml_metal_set_n_cb(ggml_metal_t ctx, int n_cb) {
         void * previous = NULL;
         for (int i = idx_start; i < idx_end; ++i) {
             const struct ggml_tensor * op = ctx->gf->nodes[i];
-            if (op->op == GGML_OP_MUL_MAT_ID && op->op_params[1] != 1) {
+            if (op->op == GGML_OP_MUL_MAT_ID && op->op_params[GGML_MOE_PHASE_PARAM] != GGML_MOE_PHASE_RESIDENT) {
                 uint64_t value = 0;
                 void * ticket = les_io_lookup(op->src[0]->data, &value);
                 if (ticket && ticket != previous) {

@@ -1,4 +1,5 @@
 #include "llama-moe-slot.h"
+#include "../ggml/src/ggml-metal/ggml-metal-impl.h"
 #include "llama-moe-protected-cache.h"
 
 #include "ggml-backend.h"
@@ -3060,7 +3061,7 @@ void llama_moe_slot_runtime::process(
             state.protected_cache.count(1), state.protected_cache.count(2));
     // The sign encodes readiness only for the guarded Metal decode graph.
     // Cache maps and replacement ages retain their original positive slot IDs.
-    if (window_mode && slot_ids->op_params[15] == 0x4c4553) {
+    if (window_mode && slot_ids->op_params[GGML_MOE_SLOT_MARKER_PARAM] == GGML_MOE_SLOT_MARKER) {
         for (const auto & item : pending) {
             for (size_t pos = 0; pos < slots.size(); ++pos)
                 if (experts[pos] == item.expert) slots[pos] = -slots[pos] - 1;

@@ -1,16 +1,12 @@
 #include "bridge.h"
 #import <Metal/Metal.h>
-#include <atomic>
-#include <condition_variable>
 #include <mutex>
 #include <unordered_map>
 #include <cassert>
 struct ticket {
     id<MTLSharedEvent> event = nil;
     uint64_t value = 0;
-    uint64_t done = 0;
     std::mutex mutex;
-    std::condition_variable cv;
 };
 static std::mutex registry_mutex;
 static std::unordered_map<void *, ticket *> registry;
@@ -44,22 +40,8 @@ uint64_t les_io_begin(void * handle) {
 }
 void les_io_signal(void * handle, uint64_t value) {
     auto * t = static_cast<ticket *>(handle);
-    { std::lock_guard<std::mutex> lock(t->mutex);t->done=value; }
     t->event.signaledValue = value;
-    t->cv.notify_all();
 }
-void les_io_wait_for_tensor(void * data) {
-    ticket * t;
-    {
-        std::lock_guard<std::mutex> lock(registry_mutex);
-        auto it=registry.find(data);
-        if (it==registry.end()) return;
-        t=it->second;
-    }
-    std::unique_lock<std::mutex> lock(t->mutex);
-    t->cv.wait(lock,[&]{return t->done>=t->value;});
-}
-
 void * les_io_lookup(void * data, uint64_t * value) {
     std::lock_guard<std::mutex> registry_lock(registry_mutex);
     const auto it = registry.find(data);

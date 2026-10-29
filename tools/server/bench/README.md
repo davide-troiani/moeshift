@@ -82,7 +82,7 @@ Following metrics are available computed from the OAI chat completions response 
 
 The script will fail if too many completions are truncated, see `llamacpp_completions_truncated_rate`.
 
-K6 metrics might be compared against [server metrics](../README.md), with:
+K6 metrics might be compared against server metrics, with:
 
 ```shell
 curl http://localhost:8080/metrics

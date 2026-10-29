@@ -1,0 +1,57 @@
+name: Bug report
+description: Installation, startup, crashes or incorrect inference in MoEShift.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search existing issues first. Report problems with this fork here, rather than upstream.
+        Remove private prompts, credentials and personal paths from everything you share.
+  - type: input
+    id: hardware
+    attributes:
+      label: Mac chip and unified memory
+      placeholder: "Example: M4 Max, 64 GB RAM"
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      description: "Apple menu → About This Mac."
+    validations:
+      required: true
+  - type: textarea
+    id: installation
+    attributes:
+      label: MoEShift version and installation
+      description: "Include the install command. For a source build, run git rev-parse HEAD in the repository; for Homebrew, use brew list --versions moeshift."
+      placeholder: "Source revision, build commands, and startup command"
+    validations:
+      required: true
+  - type: textarea
+    id: model
+    attributes:
+      label: Model and expert files
+      description: "Link to the model, give its quantization and GGUF filenames, and say whether the full experts.py verify command succeeded. If not applicable, say so."
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: "Give the smallest example, with the relevant configuration or HTTP request if applicable."
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Terminal output
+      description: "Paste the error and nearby lines as text. For a crash, include the crash report if available. Do not upload model files."
+      render: text

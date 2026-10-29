@@ -1,145 +1,206 @@
 # MoEShift
 
-Local MoE inference for Mac with Apple Silicon, optimized for Qwen 3.8 Flash Next.
-Routed experts are read from SSD into a bounded Metal cache. The server exposes
-an OpenAI-compatible HTTP API on localhost, with one inference request at a time.
+**Large AI models on your Mac. Starting with 10 GB of RAM.**
 
-Repository: [davide-troiani/moeshift](https://github.com/davide-troiani/moeshift).
-Development remains private until release preparation is complete.
+MoEShift lets you run Qwen 3.8 Flash Next locally on Apple Silicon, using your
+Mac's SSD to run a model that would otherwise need far more memory. Chat, write
+and code with a large language model on your own machine, with your conversations
+staying local and no cloud subscription required.
 
-## Build and install
+Built on [llama.cpp](https://github.com/ggml-org/llama.cpp).
 
-Requirements: Apple Silicon Mac, Apple Command Line Tools, and CMake.
-The commands below build a static executable with embedded Metal shaders.
+**Alpha release.** The core runtime is working, and the project is evolving
+quickly. You may encounter rough edges; your feedback helps shape the next release. This build
+was tested using ISTA-DASLab GSQ-RCO IQ3_XXS so far.
 
-```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
-  -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DLLAMA_OPENSSL=OFF \
-  -DLLAMA_BUILD_UI=OFF -DLLAMA_BUILD_APP=OFF -DLLAMA_BUILD_EXAMPLES=OFF \
-  -DCMAKE_INSTALL_PREFIX="$HOME/.local"
-cmake --build build --target moeshift -j 8
-cmake --install build --component moeshift
-```
+## Benchmarks
 
-The installed executable is `~/.local/bin/moeshift`. Add `~/.local/bin` to your
-`PATH` if needed. Inference does not require Python or a running helper service.
+Compared with **Strata**, a popular choice for local MoE inference, on a
+**Mac mini M4 Pro with 24 GB unified memory**. Both ran Qwen 3.8 Flash Next
+(125B), ISTA-DASLab GSQ-RCO IQ3_XXS, with an 8,192-token context, no cached prompt
+tokens and 256 output tokens. Strata: 0.2.7, build 0.1.52.
 
-## Prepare model files
+![Inference time, peak process memory and prompt processing: MoEShift versus Strata](assets/benchmarks/moeshift-vs-strata.svg)
 
-Start with the original language-model GGUF, including **all shards** if split.
-Qwen prediction-only/MTP GGUFs and appended prediction blocks are unsupported.
-Keep the GGUF files: extraction creates additional files and does not rewrite,
-strip or requantize the originals.
+| Measurement | Short prompt: MoEShift / Strata | Long prompt: MoEShift / Strata |
+|---|---|---|
+| Input tokens | 66 / 66 | 6,009 / 6,009 |
+| Inference time ↓ | **29.6 / 42.1 s** | **63.3 / 129.9 s** |
+| Prompt processing ↑ | — | **160.8 / 61.8 tok/s** |
+| Text generation ↑ | **10.44 / 8.4 tok/s** | **9.9 / 7.8 tok/s** |
+| Peak process memory ↓ | **6.4 / 14 GB** | **7.5 / 14 GB** |
 
-Expert preparation uses the repository's existing Python GGUF package, requiring
-Python 3.10+ and its declared dependencies:
+Time includes server-measured prompt processing and generation, excluding
+startup. Memory is macOS `footprint -p` peak physical process footprint.
 
-```sh
-python3 -m venv .venv
-.venv/bin/python -m pip install ./gguf-py
-```
+## What you need
 
-Choose a **new, empty** output directory. For a split GGUF, pass the first shard;
-the remaining shards must keep their original names beside it.
+- A **Mac with Apple Silicon** (M-series).
+- At least **10 GB of RAM**.
+- A fast SSD with at least **120 GB of free space** for the model and its prepared
+  files.
+- [Homebrew](https://brew.sh/), the package manager for macOS. If you have never
+  used it, follow its installation instructions, then return here.
 
-```sh
-MODEL="/absolute/path/model-00001-of-00002.gguf"
-EXPERTS="/absolute/path/experts-new"
-.venv/bin/python tools/moe/experts.py extract --model "$MODEL" --out-dir "$EXPERTS"
-.venv/bin/python tools/moe/experts.py verify --model "$MODEL" --experts "$EXPERTS"
-```
+## 1. Install MoEShift
 
-The output contains `manifest.json` and `layer_NNN.bin` files. Each layer file
-stores the routed experts in expert-major order; the manifest records tensor
-names, quantization, shapes, byte offsets and strides. Reserve additional disk
-space approximately equal to the routed-expert tensor bytes, while retaining
-the original GGUF shards.
-
-**A usable model is one matched set:** the original GGUF shards, the manifest
-and every `.bin` referenced by that manifest. Do not combine files from different
-models, quantizations or extraction runs. Matching sizes and shapes alone do
-not prove that weights match: run the full `verify` command above, which compares
-metadata and routed-expert bytes against the originals. `--metadata-only` skips
-the byte comparison and is only a quick structural check.
-
-If extraction is interrupted, retry into another empty directory and verify it
-before use. `--force` replaces files individually; it does not make the whole
-output directory an atomic transaction. Keep incomplete output out of the
-server configuration. Generated manifests include absolute source paths for
-provenance; keep generated weights and manifests local rather than committing
-them as examples.
-
-## Configure and run
-
-Copy the default profile, then set `args.model` to the first GGUF shard and
-`args.moe-experts` to the verified expert directory:
+Open **Terminal** and run:
 
 ```sh
-mkdir -p ~/.config/moeshift
-cp -n configs/moeshift.json ~/.config/moeshift/config.json
-~/.local/bin/moeshift
+brew install davide-troiani/moeshift/moeshift
 ```
 
-Configuration lookup: `moeshift.json` in the current directory, then
-`$XDG_CONFIG_HOME/moeshift/config.json` (or `~/.config/moeshift/config.json`), then
-the installed default. Use `--config FILE` to choose a file explicitly. Paths in
-profiles resolve relative to that file; absolute model paths are convenient.
+The installation includes model preparation tools. MoEShift creates
+`~/.config/moeshift/config.json` automatically on first launch and preserves
+your settings on subsequent launches and upgrades.
+
+## 2. Download the model
+
+Use the **IQ3_XXS quantization by ISTA-DASLab**:
+[Qwen3.8-Flash-Next-GSQ-RCO-GGUF on Hugging Face](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/tree/main/IQ3_XXS).
+Download **both** files into the same folder, keeping their names:
+
+- [Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/main/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf?download=true)
+- [Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/main/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf?download=true)
+
+These are large downloads, about **76 GB combined**. If you already have these
+exact files, reuse them. MoEShift does not distribute or requantize the model.
+
+## 3. Get the downloaded model ready to use
+
+Run this once to copy the model's specialized parts (“experts”) into files
+MoEShift can read directly from SSD. Keep both original GGUF downloads.
+Change `MODEL` if you downloaded them somewhere other than `~/Downloads`:
 
 ```sh
-moeshift --config configs/moeshift.json --model "$MODEL" --moe-experts "$EXPERTS" --port 8080
+MODEL="$HOME/Downloads/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf"
+EXPERTS="$HOME/Models/moeshift/qwen-iq3-experts"
+MOESHIFT_PREFIX="$(brew --prefix moeshift)"
+"$MOESHIFT_PREFIX/libexec/bin/python" \
+  "$MOESHIFT_PREFIX/share/moeshift/tools/moe/experts.py" \
+  extract --model "$MODEL" --out-dir "$EXPERTS"
 ```
 
-CLI profile overrides apply to every configured model. The JSON profile is the
-single source of runtime tuning: shell variables starting with `LLAMA_`, `GGML_`,
-`LES_` and `MB_` are not inherited by inference workers. Parallelism is fixed to
-1; external hosts and speculative-decoding options are rejected.
+Then check that the new files match the downloaded model:
 
-The shipped LRFU profile uses a 12-slot decode window, prediction depth 3 and
-24 protected slots per layer. Positive protected slots require that combination
-and enabled prefetch. The policy scores actual router demand with a 32-step
-half-life; it does not change routing top-k, expert weights or precision.
+```sh
+"$MOESHIFT_PREFIX/libexec/bin/python" \
+  "$MOESHIFT_PREFIX/share/moeshift/tools/moe/experts.py" \
+  verify --model "$MODEL" --experts "$EXPERTS"
+```
 
-| Profile setting | Default and purpose |
+Wait for both commands to finish successfully. Verification compares the copied
+weights with the originals. Keep the output folder intact (about **43 GB**).
+If interrupted, retry into a new empty folder and verify again.
+
+## 4. Set the model paths in the configuration file
+
+Run `moeshift` once to create the configuration, then stop it with Ctrl-C.
+Open the configuration:
+
+```sh
+open -e "$HOME/.config/moeshift/config.json"
+```
+
+Inside `models` → `qwen-3.8-flash-next-rco-gsq-iq3-xxs` → `args`, replace these two values:
+
+| Setting | What to enter |
 |---|---|
-| `host`, `port` | `127.0.0.1`, `8080`; localhost only |
-| `args.model`, `args.moe-experts` | First GGUF shard and matching expert directory/manifest |
-| `args.alias` | `moeshift`; must equal its key under `models` |
-| `args.ctx-size`, `args.ctx-checkpoints` | `65536` tokens; `1` checkpoint |
-| `args.threads` | `10` CPU threads |
-| `args.prefill-max-tokens` | `3072` tokens per prefill microbatch |
-| `args.moe-prefill-bank`, `args.moe-decode-bank` | `512` shared expert slots during prefill; `0` shared slots retained during decode |
-| `args.n-gpu-layers`, `args.flash-attn` | `99`, `on`; expert execution requires Metal |
-| `args.cache-type-k`, `args.cache-type-v` | `q8_0` KV quantization; the indexer stores keys only |
-| `args.no-mmap` | `true`; explicit reads for Qwen weights |
-| `env.LLAMA_MOE_DECODE_WINDOW` | `12` decode slots per layer |
-| `env.LLAMA_MOE_PROTECTED_SLOTS` | `24` additional protected slots; `0` disables the protected tier |
-| `env.LLAMA_MOE_LOOKAHEAD_PREFETCH` | `1`; enable predictive expert reads |
-| `env.LLAMA_MOE_LOOKAHEAD_PREFETCH_DEPTH`, `env.LLAMA_MOE_PREFETCH_READ` | Predict `3` experts, read `2` |
-| `env.LLAMA_MOE_PREFILL_PIPELINE` | `1`; overlap prefill reads with computation |
-| `env.LLAMA_GPU_KEEPALIVE` | `1`; keep the GPU active while the worker exists; `0` disables it |
-| `env.LLAMA_MOE_QUIET` | `1`; suppress expert diagnostics; `0` enables them |
+| `model` | The full path to the **first** downloaded `.gguf` file. |
+| `moe-experts` | The full path to the folder created in step 3. |
 
-Use the argument names as CLI overrides (`--ctx-size`, `--threads`, etc.).
-`--no-mmap true/false` overrides its JSON boolean. Cache overrides are
-`--moe-decode-window` and `--moe-protected-slots`. Other environment entries are
-set in the profile. Stop with Ctrl-C. The worker, its readers and the GPU
-keepalive terminate with the server, including after a forced server exit.
+Use full paths in JSON (not `~` or `$HOME`), keep the quotes and commas, and save.
+Leave the other settings at their defaults for your first run.
 
-## HTTP
+### Adjust speed and memory use
+
+You can adjust these settings in the configuration file to suit your Mac.
+With more RAM, you can increase `moe-prefill-bank` and
+`LLAMA_MOE_PROTECTED_SLOTS` to keep more model data in memory and reduce SSD
+reads. Lower them to use less RAM. For better control, change one setting at a time and restart
+MoEShift to apply it.
+
+| Setting | Default | Direct effect |
+|---|---|---|
+| `args.ctx-size` | `65536` | Maximum conversation length in tokens. Lower it to limit memory growth during long conversations; raise it to allow longer conversations, with more memory use as they grow. |
+| `args.moe-prefill-bank` | `512` | Expert cache used when reading your prompt. More slots can reduce SSD reads and speed up prompt processing, using more RAM; fewer slots save RAM. |
+| `args.prefill-max-tokens` | `3072` | Amount of prompt text processed per batch. Smaller batches reduce peak working memory; larger batches can improve prompt-processing speed. |
+| `env.LLAMA_MOE_PROTECTED_SLOTS` | `24` | Extra experts kept in memory while generating replies. More slots can reduce SSD reads and improve speed, using more RAM; fewer slots save RAM. |
+| `args.threads` | `10` | CPU threads available to inference. More threads can help CPU work but compete with other apps; more is not always faster. |
+| `env.LLAMA_GPU_KEEPALIVE` | `1` | Keeps the GPU active to reduce wake-up delays. Set to `0` to reduce idle GPU activity and power use, but expect lower speeds. |
+| `env.LLAMA_MOE_QUIET` | `1` | Keeps expert diagnostics out of Terminal. Set to `0` for more detail when investigating a problem. |
+| `port` | `8080` | Change this if another application already uses the port; use the same port in your client. |
+
+The default settings are tuned for Qwen 3.8 Flash Next RCO GSQ IQ3 XXS on Mac mini M4 Pro with 24GB unified memory that I used during my tests. The
+[full configuration reference](configs/README.md) covers the remaining options,
+valid combinations and command-line overrides. Settings under `env` are edited
+in this file, rather than exported in Terminal.
+
+## 5. Start MoEShift
 
 ```sh
-curl http://127.0.0.1:8080/health
-curl http://127.0.0.1:8080/v1/models
+moeshift
+```
+
+Leave this Terminal open. MoEShift starts a local server at
+`http://127.0.0.1:8080`. Stop it with **Ctrl-C**. Next time, just run the same
+command; you do not need to repeat the model preparation.
+
+### Connect your chat or coding application
+
+In any client that supports an OpenAI-compatible API, enter:
+
+| Field | Value |
+|---|---|
+| Base URL | `http://127.0.0.1:8080/v1` |
+| Model | `qwen-3.8-flash-next-rco-gsq-iq3-xxs` |
+
+MoEShift handles one inference request at a time and listens only on localhost.
+
+### Try a message from Terminal
+
+Open another Terminal and run:
+
+```sh
 curl http://127.0.0.1:8080/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"model":"moeshift","messages":[{"role":"user","content":"Ciao"}],"max_tokens":128,"stream":true}'
+  -d '{"model":"qwen-3.8-flash-next-rco-gsq-iq3-xxs","messages":[{"role":"user","content":"Say hello in one sentence."}],"chat_template_kwargs":{"enable_thinking":false},"max_tokens":128,"stream":false}'
 ```
 
-Use the profile identifier returned by `/v1/models`. Streaming uses SSE and ends
-with `data: [DONE]`; `stream: false` returns a single JSON response.
-`/v1/completions` accepts a `prompt` instead of `messages`.
+For API integrations: `GET /health` checks the server; `GET /v1/models` lists
+model identifiers. `POST /v1/chat/completions` accepts `messages`;
+`POST /v1/completions` accepts `prompt`. Set `stream: true` for SSE streaming,
+ending with `data: [DONE]`.
 
-## Upstream and license
+## Feedback and issues
+
+Found a problem or have an idea?
+[Open an issue](https://github.com/davide-troiani/moeshift/issues/new/choose),
+after checking whether someone has already reported it.
+
+Choose **Bug report** for installation, startup or inference problems, or
+**Feature request** for suggestions. The form guides you through the useful
+information: your Mac chip and RAM, macOS version, MoEShift version, model files,
+steps to reproduce and relevant Terminal output. Remove private prompts,
+credentials and personal paths before posting.
+
+## Architecture
+
+Read the [MoEShift architecture](docs/architecture.md) for the project’s design:
+LES (Lookahead Expert Scheduling), expert loading and Metal execution, cache
+policy, memory management, and server/worker lifetimes.
+
+## Documentation scope
+
+The alpha targets Apple Silicon Macs. Some remaining documents describe upstream
+components and may mention platforms or features outside MoEShift's scope; they
+will be cleaned up over time. Start with this README and the
+[configuration reference](configs/README.md). Runtime details:
+[adaptive prefill](docs/les/adaptive-prefill.md),
+[protected cache](docs/les/protected-decode-cache.md), and
+[GPU keepalive](docs/les/gpu-keepalive.md).
+
+## Credits and license
 
 MoEShift builds on [tc-mb/llama.cpp-omni](https://github.com/tc-mb/llama.cpp-omni),
 [llama.cpp](https://github.com/ggml-org/llama.cpp) and
@@ -148,5 +209,9 @@ precede MoEShift's Qwen runtime, Metal scheduling and cache changes. The protect
 cache adapts the demand-weighted decay idea from
 [LRFU](https://www.openu.ac.il/home/wiseman/2os/lru/lrfu.pdf).
 
-The original Git history and copyright notices are retained. See [LICENSE](LICENSE)
+Model and quantization credits belong to their respective authors; the
+recommended GGUF files are published by
+[ISTA-DASLab](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF).
+
+Original Git history and copyright notices are retained. See [LICENSE](LICENSE)
 and the bundled third-party licenses. Model weights retain their own licenses.

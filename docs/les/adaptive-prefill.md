@@ -1,62 +1,59 @@
-# Adaptive LES prefill
+# Adaptive prefill
 
-`llama-les-server` supports adaptive prefill for Qwen4Exp on macOS/Metal,
-with one inference slot and speculative decoding disabled.
+MoEShift uses different expert-memory budgets for reading a prompt (prefill)
+and generating a reply (decode). This path targets Qwen 3.8 Flash Next on
+Apple Silicon with Metal. Inference parallelism is fixed to one.
 
-| Startup option | Default | Behavior |
+## Configuration
+
+Edit the model profile in `~/.config/moeshift/config.json`:
+
+| Profile entry | Default | Effect |
 |---|---:|---|
-| `--prefill-max-tokens` | 3072 | Maximum logical batch and physical microbatch size. Overrides `--batch-size` and `--ubatch-size`. |
-| `--moe-prefill-bank` | 512 | Shared prefill expert slots. Overrides `--moe-slot-bank`. |
-| `--moe-decode-bank` | 0 | Shared bank slots retained during decoding; must be smaller than the prefill bank. |
+| `args.prefill-max-tokens` | `3072` | Maximum logical batch and physical microbatch size. Smaller batches reduce peak working memory. |
+| `args.moe-prefill-bank` | `512` | Shared expert slots used during prefill. A larger bank can reduce SSD reads, using more memory. |
+| `args.moe-decode-bank` | `0` | Shared expert slots retained during decode; must be smaller than the prefill bank. Per-layer decode windows remain allocated separately. |
+| `env.LLAMA_MOE_PREFILL_PIPELINE` | `1` | Overlap prefill expert reads with computation. |
 
-The server fills batches with the available prompt tokens, up to the configured
-limit. Existing context checkpoints may split them further. A shared bank of
-512 slots covers all experts in the tested Qwen model.
+The three `args` entries also accept CLI overrides with the corresponding
+`--` names. Runtime tuning is read from JSON, not inherited shell exports.
+The shipped decode profile uses window 12, prefetch depth 3 and 24 protected
+slots; see [protected decode cache](protected-decode-cache.md).
 
-Keep the baseline environment:
+## Execution and phase transitions
 
-```sh
-export LLAMA_GPU_KEEPALIVE=1
-export LLAMA_MOE_DECODE_WINDOW=10
-export LLAMA_MOE_F_NOCACHE=0
-export LLAMA_MOE_LOOKAHEAD_PREFETCH=1
-export LLAMA_MOE_PREFETCH_READ=2
-export LLAMA_MOE_LOOKAHEAD_PREFETCH_DEPTH=3
-export LLAMA_MOE_PREFILL_PIPELINE=1
-```
+The server fills each batch with available prompt tokens up to the configured
+limit. Context checkpoints can split it further. A 512-slot shared bank covers
+the reference model's 512 experts and is reused across layers.
 
-Use `--parallel 1 --spec-type none`, and pass the existing model, experts,
-context and cache arguments to `llama-les-server`. The three adaptive options
-above are optional because their defaults enable the tested configuration.
+Before switching phases, the runtime synchronizes GPU work and drains expert
+readers. It invalidates cached mappings and sets the active Metal buffer ranges
+for the new phase. During decode, the unused shared-bank ranges are released;
+the per-layer decode windows and protected cache remain available. Virtual
+addresses stay reserved while discarded host pages become reusable by macOS.
+The next prefill restores the shared-bank ranges before using them.
 
-After prefill, the server synchronizes GPU work and expert readers, invalidates
-cached mappings, and releases the unused shared-bank Metal ranges. Decode bank
-zero retains the separate per-layer decode windows: 10 cache slots plus 3
-prefetch slots in this configuration. Virtual addresses remain reserved; excluded
-host pages become reusable by macOS. The next prefill restores the full bank.
+Expert execution uses the common Metal phase identifiers in
+`ggml/src/ggml-metal/ggml-metal-impl.h`: `ALL` (0), `RESIDENT` (1), and
+`MISSING` (2). The resident/missing path requires Metal placement. Predictions
+schedule reads; the actual router determines which experts are computed.
 
-`LES adaptive-batch`, `adaptive phase`, and `LES phase-memory` log the actual
-microbatches, shared bank size, and active/released allocation bytes.
+Set `env.LLAMA_MOE_QUIET` to `0` for diagnostics such as `adaptive-batch`,
+`adaptive phase=prefill/decode`, `phase-scratch`, and `protected-cache`.
 
-Validation on Apple M4 Pro, 24 GiB, with context capacity 65536 and 128 generated
-tokens per request, without prompt-cache reuse or an A/B/A comparison:
+## Code and verification
 
-| Prompt | Tokens | Actual prefill batches | Prefill token/s | Decode token/s | Peak decode footprint, decimal GB |
-|---|---:|---|---:|---:|---:|
-| Long text | 5929 | 2857, 3068, 4 | 191.512 | 7.810 | 7.473 |
-| Short sentence | 12 | 8, 4 | 8.105 | 8.163 | 6.503 |
+The server sets batch and bank budgets in `tools/server/server-les.cpp`.
+`src/llama-moe-slot.cpp` handles phase transitions and expert readers;
+`src/llama-context.cpp` coordinates the graph and phase scratch memory.
 
-Both requests reduced the shared bank from 512 to zero, releasing 1,192,722,432
-bytes of Metal allocations while preserving the decode windows and prefetch.
-The short request followed the long one in the same process, exercising bank
-restoration. These measurements do not establish a speedup against a control.
-Other models and positive decode-bank values were not benchmarked.
-
-The macOS test `test-les-active-ranges` checks shrink/restore, stable tensor
-addresses, and invalid-range rejection without loading a model:
+With tests enabled in the build:
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=ON
-cmake --build build --target llama-les-server test-les-active-ranges -j 8
-ctest --test-dir build -R '^test-les-active-ranges$' --output-on-failure
+cmake --build build --target moeshift test-les-active-ranges test-metal-moe-phases -j 8
+ctest --test-dir build -R '^(test-les-active-ranges|test-metal-moe-phases)$' --output-on-failure
 ```
+
+These checks cover Metal active-range shrink/restore and shared phase constants.
+They are not end-to-end performance benchmarks; see the repository README for
+measured inference results.

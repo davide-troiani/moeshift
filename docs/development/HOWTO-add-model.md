@@ -10,16 +10,16 @@ Adding a model requires few steps:
 After following these steps, you can open PR.
 
 Also, it is important to check that the examples and main ggml backends (CUDA, METAL, CPU) are working with the new architecture, especially:
-- [cli](/tools/cli/)
-- [completion](/tools/completion/)
-- [imatrix](/tools/imatrix/)
-- [quantize](/tools/quantize/)
-- [server](/tools/server/)
+- [cli](../../tools/cli)
+- [completion](../../tools/completion)
+- [imatrix](../../tools/imatrix)
+- [quantize](../../tools/quantize)
+- [server](../../tools/server)
 
 ### 1. Convert the model to GGUF
 
 This step is done in python with a `convert` script using the [gguf](https://pypi.org/project/gguf/) library.
-Depending on the model architecture, you can use either [convert_hf_to_gguf.py](/convert_hf_to_gguf.py) or [examples/convert_legacy_llama.py](/examples/convert_legacy_llama.py) (for `llama/llama2` models in `.pth` format).
+Depending on the model architecture, you can use either [convert_hf_to_gguf.py](../../convert_hf_to_gguf.py) or [examples/convert_legacy_llama.py](../../examples/convert_legacy_llama.py) (for `llama/llama2` models in `.pth` format).
 
 The convert script reads the model configuration, tokenizer, tensor names+data and converts them to GGUF metadata and tensors.
 
@@ -41,7 +41,7 @@ class MyModel(MmprojModel):
     model_arch = gguf.MODEL_ARCH.MYMODEL
 ```
 
-2. Define the layout of the GGUF tensors in [constants.py](/gguf-py/gguf/constants.py)
+2. Define the layout of the GGUF tensors in [constants.py](../../gguf-py/gguf/constants.py)
 
 Add an enum entry in `MODEL_ARCH`, the model human friendly name in `MODEL_ARCH_NAMES` and the GGUF tensor names in `MODEL_TENSORS`.
 
@@ -64,7 +64,7 @@ Example for `falcon` model:
 
 As a general rule, before adding a new tensor name to GGUF, be sure the equivalent naming does not already exist.
 
-Once you have found the GGUF tensor name equivalent, add it to the [tensor_mapping.py](/gguf-py/gguf/tensor_mapping.py) file.
+Once you have found the GGUF tensor name equivalent, add it to the [tensor_mapping.py](../../gguf-py/gguf/tensor_mapping.py) file.
 
 If the tensor name is part of a repetitive layer/block, the key word `bid` substitutes it.
 
@@ -113,11 +113,11 @@ Then, in the `llama_model::build_graph` method, add a case for your architecture
 
 Some `ggml` backends do not support all operations. Backend implementations can be added in a separate PR.
 
-Note: to debug the inference graph: you can use [llama-eval-callback](/examples/eval-callback/).
+Note: to debug the inference graph: you can use [llama-eval-callback](../../examples/eval-callback).
 
 ### 4. Optional: Add multimodal encoder implementation
 
-If the new model supports multimodal inputs, you will need to add a new encoder definition in `libmtmd`. You can find more information about llama.cpp's multimodal support in [the docs](../multimodal.md) and in the `tools/mtmd` source directory.
+If the new model supports multimodal inputs, you will need to add a new encoder definition in `libmtmd`. See the `tools/mtmd` source directory for the encoder implementation.
 
 1. In the conversion script, make sure you add a subclass that extends `MmprojModel` or another class that inherits from the same base class.
 2. Add the encoder definition in `clip.cpp`.
@@ -126,7 +126,7 @@ If the new model supports multimodal inputs, you will need to add a new encoder 
 
 Note:
 - Many multimodal encoders are based on models that are already supported. Make sure to read the existing encoder definitions in `tools/mtmd/models` before adding a new one. In `libmtmd`, it is generally better to extend an existing model than to duplicate code.
-- To debug the multimodal preprocessor and encoder, you can use [llama-mtmd-debug](tools/mtmd/debug/mtmd-debug.cpp).
+- To debug the multimodal preprocessor and encoder, you can use [llama-mtmd-debug](../../tools/mtmd/debug/mtmd-debug.cpp).
 - Adding a model-specific API or CLI is an anti-pattern in `libmtmd`. The goal of `libmtmd` is to provide an easy-to-use, model-agnostic library for multimodal pipeline.
 - In most cases, `llama-mtmd-cli` should not be modified. If a model requires a specific prompt, either let the user provide it or bake it into the Jinja chat template.
 

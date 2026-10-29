@@ -14,10 +14,6 @@ The naming and structure related to multimodal support have evolved, which might
 - [#12849](https://github.com/ggml-org/llama.cpp/pull/12849): `libmtmd` was introduced as a replacement for `llava.cpp`. Its goals include providing a single, unified command-line interface, improving the user/developer experience (UX/DX), and supporting both audio and image inputs.
 - [#13012](https://github.com/ggml-org/llama.cpp/pull/13012): `mtmd-cli` was added, consolidating the various model-specific CLIs into a single tool powered by `libmtmd`.
 
-## Pre-quantized models
-
-See the list of pre-quantized model [here](../../docs/multimodal.md)
-
 ## How it works and what is `mmproj`?
 
 Multimodal support in `llama.cpp` works by encoding images into embeddings using a separate model component, and then feeding these embeddings into the language model.

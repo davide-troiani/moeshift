@@ -111,7 +111,8 @@ public:
                llama_swa_type   swa_type,
         const layer_filter_cb & filter,
         const  layer_reuse_cb & reuse,
-                 const char * name_tag = "");
+                 const char * name_tag = "",
+                         bool   key_only = false);
 
     const llama_kv_cells & get_cells(llama_seq_id seq_id) const;
     bool has_cell_ext() const;

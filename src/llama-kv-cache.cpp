@@ -93,7 +93,8 @@ llama_kv_cache::llama_kv_cache(
            llama_swa_type   swa_type,
     const layer_filter_cb & filter,
     const  layer_reuse_cb & reuse,
-             const char * name_tag) :
+             const char * name_tag,
+                     bool   key_only) :
     model(model), hparams(hparams), v_trans(v_trans),
     n_seq_max(n_seq_max), n_stream(unified ? 1 : n_seq_max), n_pad(n_pad), n_swa(n_swa), swa_type(swa_type) {
 
@@ -217,7 +218,7 @@ llama_kv_cache::llama_kv_cache(
         }
 
         const bool has_k = true;
-        const bool has_v = !is_mla;
+        const bool has_v = !is_mla && !key_only;
 
         ggml_tensor * k = has_k ? ggml_new_tensor_3d(ctx, type_k, n_embd_k_gqa, allocated_cells, n_stream) : nullptr;
         ggml_tensor * v = has_v ? ggml_new_tensor_3d(ctx, type_v, n_embd_v_gqa, allocated_cells, n_stream) : nullptr;
@@ -317,7 +318,7 @@ llama_kv_cache::llama_kv_cache(
     }
 
     attn_rot_v =
-        !attn_rot_disable &&
+        !key_only && !attn_rot_disable &&
         n_embd_head_v_all > 0 &&
         ggml_is_quantized(type_v) &&
         hparams.n_embd_head_v() % 64 == 0;
@@ -1228,7 +1229,7 @@ ggml_type llama_kv_cache::type_k() const {
 }
 
 ggml_type llama_kv_cache::type_v() const {
-    return layers[0].v->type;
+    return layers[0].v ? layers[0].v->type : GGML_TYPE_COUNT;
 }
 
 uint32_t llama_kv_cache::get_n_kv(const slot_info & sinfo) const {

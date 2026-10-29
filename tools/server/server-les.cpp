@@ -79,7 +79,16 @@ int main(int argc, char ** argv) {
             if (_NSGetExecutablePath(path.data(), &size) == 0) {
                 auto prefix = std::filesystem::canonical(path.data()).parent_path().parent_path();
                 auto installed = prefix / "share/moeshift/moeshift.json";
-                config = installed.string();
+                if ((home && *home) || (xdg && *xdg)) {
+                    std::filesystem::create_directories(user_config.parent_path());
+                    if (std::filesystem::copy_file(installed, user_config, std::filesystem::copy_options::skip_existing)) {
+                        std::cerr << "moeshift: created configuration at " << user_config
+                                  << "; set model and moe-experts paths before inference\n";
+                    }
+                    config = user_config.string();
+                } else {
+                    config = installed.string();
+                }
             }
 #endif
             }

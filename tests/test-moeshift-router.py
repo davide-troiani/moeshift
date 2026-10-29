@@ -90,7 +90,7 @@ class RouterTest(unittest.TestCase):
         worker.chmod(0o755)
         self.port = free_port()
         example = json.loads((Path(__file__).resolve().parents[1] / "configs/moeshift.json").read_text())
-        profile = example["models"]["moeshift"]
+        profile = example["models"]["qwen-3.8-flash-next-rco-gsq-iq3-xxs"]
         self.config = {"binary": str(worker), "host": "127.0.0.1", "port": self.port, "models": {}}
         for name, ctx in (("a", 2048), ("b", 4096), ("fail", 2048)):
             value = json.loads(json.dumps(profile))

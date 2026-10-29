@@ -2,7 +2,7 @@
   "host": "127.0.0.1",
   "port": 8080,
   "models": {
-    "moeshift": {
+    "qwen-3.8-flash-next-rco-gsq-iq3-xxs": {
       "args": {
         "model": "/path/to/model-00001-of-00002.gguf",
         "moe-experts": "/path/to/experts",
@@ -17,7 +17,7 @@
         "cache-type-v": "q8_0",
         "threads": 10,
         "no-mmap": true,
-        "alias": "moeshift"
+        "alias": "qwen-3.8-flash-next-rco-gsq-iq3-xxs"
       },
       "env": {
         "LLAMA_MOE_QUIET": 1,

@@ -118,3 +118,11 @@ install(FILES ${CMAKE_SOURCE_DIR}/tools/moe/experts.py
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/gguf-py/gguf
     DESTINATION share/moeshift/gguf-py COMPONENT moeshift
     FILES_MATCHING PATTERN "*.py" PATTERN "__pycache__" EXCLUDE)
+
+install(FILES ${CMAKE_SOURCE_DIR}/LICENSE
+    DESTINATION share/moeshift/licenses COMPONENT moeshift)
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/licenses/
+    DESTINATION share/moeshift/licenses COMPONENT moeshift)
+install(FILES ${CMAKE_SOURCE_DIR}/gguf-py/LICENSE
+    DESTINATION share/moeshift/licenses
+    RENAME LICENSE-gguf-py COMPONENT moeshift)

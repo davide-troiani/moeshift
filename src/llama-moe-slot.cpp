@@ -785,13 +785,8 @@ install_timing start_demand(
                 }
             });
         resolve_decode_window();
-        {
-            const char * e = std::getenv("LLAMA_MOE_MATMUL_SPLIT");
-            matmul_split = e ? std::atoi(e) : 0;
-            if (matmul_split > 0) {
-                moe_log("matmul-split: 末尾 %d 个位置的缺失专家延后读取（读与算重叠）",
-                        (int) matmul_split);
-            }
+        if (std::getenv("LLAMA_MOE_MATMUL_SPLIT")) {
+            throw std::runtime_error("LLAMA_MOE_MATMUL_SPLIT was removed; use the Metal resident/missing pipeline");
         }
 
         // decode 窗口那一套绑定要等 resolve_decode_window() —— 它依赖 shared_bank

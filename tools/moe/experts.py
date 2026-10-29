@@ -219,7 +219,7 @@ def extract(args: argparse.Namespace) -> int:
         output.write("\n")
 
     total = sum(entry["exact_byte_length"] for entry in entries)
-    print(f"wrote {len(entries)} tensors in {len(by_layer)} layers ({total} bytes)")
+    print(f"moeshift: wrote {len(entries)} tensors in {len(by_layer)} layers ({total} bytes)")
     print(out_dir / "manifest.json")
     return 0
 
@@ -265,12 +265,12 @@ def verify(args: argparse.Namespace) -> int:
     if {entry["tensor_name"] for entry in entries} != set(expected_by_name):
         raise SystemExit("manifest tensor set does not match the requested GGUF tensors")
     mode = "metadata" if args.metadata_only else "metadata and bytes"
-    print(f"verified {len(entries)} tensors ({mode})")
+    print(f"moeshift: verified {len(entries)} tensors ({mode})")
     return 0
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Extract expert-major GGUF experts for Omni MoE experiments.")
+    parser = argparse.ArgumentParser(description="MoEShift: extract and verify expert-major GGUF weights.")
     commands = parser.add_subparsers(dest="command", required=True)
 
     extract_parser = commands.add_parser("extract")

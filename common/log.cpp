@@ -65,6 +65,7 @@ struct common_log_entry {
     enum ggml_log_level level;
 
     bool prefix;
+    std::string application;
 
     int64_t timestamp;
 
@@ -111,7 +112,19 @@ struct common_log_entry {
             }
         }
 
-        fprintf(fcur, "%s", msg.data());
+        const char * text = msg.data();
+        if (application.empty() || level == GGML_LOG_LEVEL_NONE) {
+            fprintf(fcur, "%s", text);
+        } else {
+            // Prefix each diagnostic line, including messages from upstream components.
+            while (*text) {
+                const char * end = std::strchr(text, '\n');
+                const size_t length = end ? size_t(end - text + 1) : std::strlen(text);
+                fprintf(fcur, "[%s] ", application.c_str());
+                fwrite(text, 1, length, fcur);
+                text += length;
+            }
+        }
 
         if (level == GGML_LOG_LEVEL_WARN || level == GGML_LOG_LEVEL_ERROR || level == GGML_LOG_LEVEL_DEBUG) {
             fprintf(fcur, "%s", g_col[COMMON_LOG_COL_DEFAULT]);
@@ -159,6 +172,7 @@ private:
     FILE * file;
 
     bool prefix;
+    std::string application;
     bool timestamps;
     bool running;
 
@@ -218,6 +232,7 @@ public:
 
         entry.level = level;
         entry.prefix = prefix;
+        entry.application = application;
         entry.timestamp = 0;
         if (timestamps) {
             entry.timestamp = t_us() - t_start;
@@ -343,6 +358,11 @@ public:
         resume();
     }
 
+    void set_application(const char * name) {
+        std::lock_guard<std::mutex> lock(mtx);
+        application = name ? name : "";
+    }
+
     void set_prefix(bool prefix) {
         std::lock_guard<std::mutex> lock(mtx);
 
@@ -417,6 +437,10 @@ void common_log_set_colors(struct common_log * log, log_colors colors) {
 
     GGML_ASSERT(colors == LOG_COLORS_ENABLED);
     log->set_colors(true);
+}
+
+void common_log_set_application(struct common_log * log, const char * name) {
+    log->set_application(name);
 }
 
 void common_log_set_prefix(struct common_log * log, bool prefix) {

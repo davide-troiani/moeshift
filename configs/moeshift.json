@@ -1,0 +1,34 @@
+{
+  "host": "127.0.0.1",
+  "port": 8080,
+  "models": {
+    "moeshift": {
+      "args": {
+        "model": "/path/to/model-00001-of-00002.gguf",
+        "moe-experts": "/path/to/experts",
+        "ctx-size": 65536,
+        "ctx-checkpoints": 1,
+        "prefill-max-tokens": 3072,
+        "moe-prefill-bank": 512,
+        "moe-decode-bank": 0,
+        "n-gpu-layers": 99,
+        "flash-attn": "on",
+        "cache-type-k": "q8_0",
+        "cache-type-v": "q8_0",
+        "threads": 10,
+        "no-mmap": true,
+        "alias": "moeshift"
+      },
+      "env": {
+        "LLAMA_MOE_QUIET": 0,
+        "LLAMA_GPU_KEEPALIVE": 1,
+        "LLAMA_MOE_DECODE_WINDOW": 12,
+        "LLAMA_MOE_LOOKAHEAD_PREFETCH": 1,
+        "LLAMA_MOE_PREFETCH_READ": 2,
+        "LLAMA_MOE_LOOKAHEAD_PREFETCH_DEPTH": 3,
+        "LLAMA_MOE_PREFILL_PIPELINE": 1,
+        "LLAMA_MOE_PROTECTED_SLOTS": 32
+      }
+    }
+  }
+}

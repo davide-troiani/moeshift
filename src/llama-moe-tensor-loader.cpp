@@ -182,7 +182,7 @@ void llama_moe_tensor_loader::finish() {
             }
             for (int il = 0; il < int(model.hparams.n_layer); ++il)
                 GGML_ASSERT(overlay_width >= width_of(il));
-            LLAMA_LOG_INFO("LES phase-overlay: %d slots/layer in unchanged allocations\n", overlay_width);
+            LLAMA_LOG_INFO("moeshift: phase-overlay: %d slots/layer in unchanged allocations\n", overlay_width);
         }
         size_t resident = 0;
         int n_win = 0;

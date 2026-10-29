@@ -81,29 +81,40 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/ui.h"
     "#pragma once\n"
 )
 
-add_executable(llama-les-server
+add_executable(moeshift
     server-les.cpp
+    server-les-router.cpp
+    server-models.cpp
     server-http.cpp
 )
+set_target_properties(moeshift PROPERTIES OUTPUT_NAME moeshift INSTALL_RPATH "@loader_path/../lib")
 
-target_link_libraries(llama-les-server PRIVATE
+target_link_libraries(moeshift PRIVATE
     server-context
     llama-common
     cpp-httplib
     ${CMAKE_THREAD_LIBS_INIT}
 )
 
-target_include_directories(llama-les-server PRIVATE
+target_include_directories(moeshift PRIVATE
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/vendor
     ${CMAKE_CURRENT_BINARY_DIR}
 )
 
-target_compile_features(llama-les-server PRIVATE cxx_std_17)
+target_compile_features(moeshift PRIVATE cxx_std_17)
 
 if (APPLE AND GGML_METAL)
-    target_sources(llama-les-server PRIVATE gpu-keepalive.mm gpu-keepalive.h)
+    target_sources(moeshift PRIVATE gpu-keepalive.mm gpu-keepalive.h)
     set_source_files_properties(gpu-keepalive.mm PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "-x;objective-c++;-fobjc-arc")
-    target_compile_definitions(llama-les-server PRIVATE LLAMA_LES_METAL_KEEPALIVE)
-    target_link_libraries(llama-les-server PRIVATE "-framework Foundation" "-framework Metal")
+    target_compile_definitions(moeshift PRIVATE LLAMA_LES_METAL_KEEPALIVE)
+    target_link_libraries(moeshift PRIVATE "-framework Foundation" "-framework Metal")
 endif()
+
+install(TARGETS moeshift RUNTIME DESTINATION bin COMPONENT moeshift)
+install(FILES ${CMAKE_SOURCE_DIR}/configs/moeshift.json DESTINATION share/moeshift COMPONENT moeshift)
+install(FILES ${CMAKE_SOURCE_DIR}/tools/moe/experts.py
+    DESTINATION share/moeshift/tools/moe COMPONENT moeshift)
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/gguf-py/gguf
+    DESTINATION share/moeshift/gguf-py COMPONENT moeshift
+    FILES_MATCHING PATTERN "*.py" PATTERN "__pycache__" EXCLUDE)

@@ -84,6 +84,9 @@ struct server_model_meta {
     void update_caps();
 };
 
+// Find an available ephemeral port number for a local inference worker.
+int server_get_free_port();
+
 struct subprocess_s;
 
 struct server_models {

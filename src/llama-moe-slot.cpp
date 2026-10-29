@@ -82,14 +82,18 @@ static int64_t now_ns() {
 
 // Xcode 能抓住 stderr（和 [MBMtmd] 一样）。llama-cli 的 callback 会吞掉纯 LLAMA_LOG_INFO。
 static void moe_log(const char * fmt, ...) {
+    const char * quiet = std::getenv("LLAMA_MOE_QUIET");
+    if (quiet && quiet[0] == '1' && quiet[1] == '\0') {
+        return;
+    }
     char buf[768];
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    fprintf(stderr, "[moe-ssd] %s\n", buf);
+    fprintf(stderr, "[moeshift] %s\n", buf);
     fflush(stderr);
-    LLAMA_LOG_INFO("[moe-ssd] %s\n", buf);
+    LLAMA_LOG_INFO("[moeshift] %s\n", buf);
 }
 
 static bool park_window_enabled() {

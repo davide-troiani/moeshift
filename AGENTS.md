@@ -1,6 +1,8 @@
-# Instructions for llama.cpp-omni
+# Instructions for MoEShift
 
-This file defines the current policy for llama.cpp-omni. The inherited llama.cpp policy is archived in [AGENTS.llama.cpp.md](AGENTS.llama.cpp.md).
+This standalone repository is MoEShift (`davide-troiani/moeshift`). It is independent of MiniCPM-V-Apps; do not apply instructions from that former parent repository. The sole Git remote is `origin`, pointing to `https://github.com/davide-troiani/moeshift.git`. Preserve the existing commit history.
+
+This file defines the current policy for MoEShift. The inherited llama.cpp policy is archived in [AGENTS.llama.cpp.md](AGENTS.llama.cpp.md).
 
 > [!IMPORTANT]
 > This project does **not** accept pull requests that are fully or predominantly AI-generated. AI tools may be utilized solely in an assistive capacity.

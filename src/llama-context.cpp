@@ -1423,6 +1423,8 @@ struct fw_probe_guard {
 } // namespace
 
 llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
+    const char * moe_quiet = std::getenv("LLAMA_MOE_QUIET");
+    const bool quiet = moe_quiet && std::strcmp(moe_quiet, "1") == 0;
     if (moe_slots) {
         moe_slots->ensure_unparked();
         const bool decode = ubatch.n_tokens <= uint32_t(moe_slots->window_max_rows());
@@ -1432,8 +1434,8 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
             gf_res_prev->reset();
             moe_slots->set_adaptive_phase(decode);
         }
-        if (!decode && std::getenv("LLAMA_LES_DECODE_BANK"))
-            fprintf(stderr, "LES adaptive-batch: tokens=%u cap=%u\n", ubatch.n_tokens, cparams.n_ubatch);
+        if (!quiet && !decode && std::getenv("LLAMA_LES_DECODE_BANK"))
+            fprintf(stderr, "moeshift: adaptive-batch: tokens=%u cap=%u\n", ubatch.n_tokens, cparams.n_ubatch);
     }
     if (model.arch == LLM_ARCH_QWEN4EXP &&
         ((moe_slots && ubatch.n_tokens <= uint32_t(moe_slots->window_max_rows())) ||
@@ -1445,7 +1447,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
             gf_res_prev->reset();
             sched.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(),
                 backend_ptrs.size(), graph_max_nodes(cparams.n_ubatch), cparams.pipeline_parallel, cparams.op_offload));
-            fprintf(stderr, "LES phase-scratch: released %zu bytes before decode\n", reserved);
+            if (!quiet) fprintf(stderr, "moeshift: phase-scratch: released %zu bytes before decode\n", reserved);
         }
     }
     // 前向探针：见上面 fw_probe_guard 的说明。默认关闭，零开销。

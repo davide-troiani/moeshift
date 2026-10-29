@@ -8,9 +8,16 @@
 #include <Metal/Metal.h>
 
 #include <stdatomic.h>
+#include <stdlib.h>
+#include <string.h>
 #include <errno.h>
 #include <sys/mman.h>
 #include <unistd.h>
+
+static bool ggml_metal_moe_quiet(void) {
+    const char * value = getenv("LLAMA_MOE_QUIET");
+    return value && strcmp(value, "1") == 0;
+}
 
 #ifndef TARGET_OS_VISION
 #define TARGET_OS_VISION 0
@@ -1710,11 +1717,13 @@ bool ggml_metal_buffer_park(ggml_metal_buffer_t buf) {
             buf->all_size / 1024.0 / 1024.0,
             had_metal ? "released" : "already-nil",
             buf->dev->mtl_device.currentAllocatedSize / 1024.0 / 1024.0);
-    fprintf(stderr, "[ggml-metal] park: %.2f MiB metal=%s allocated now %.2f MiB\n",
+    if (!ggml_metal_moe_quiet()) {
+    fprintf(stderr, "[moeshift] metal park: %.2f MiB metal=%s allocated now %.2f MiB\n",
             buf->all_size / 1024.0 / 1024.0,
             had_metal ? "released" : "already-nil",
             buf->dev->mtl_device.currentAllocatedSize / 1024.0 / 1024.0);
     fflush(stderr);
+    }
     return true;
 }
 
@@ -1763,10 +1772,12 @@ bool ggml_metal_buffer_unpark(ggml_metal_buffer_t buf) {
             __func__,
             buf->all_size / 1024.0 / 1024.0,
             buf->dev->mtl_device.currentAllocatedSize / 1024.0 / 1024.0);
-    fprintf(stderr, "[ggml-metal] unpark: rewrapped %.2f MiB, allocated now %.2f MiB\n",
+    if (!ggml_metal_moe_quiet()) {
+    fprintf(stderr, "[moeshift] metal unpark: rewrapped %.2f MiB, allocated now %.2f MiB\n",
             buf->all_size / 1024.0 / 1024.0,
             buf->dev->mtl_device.currentAllocatedSize / 1024.0 / 1024.0);
     fflush(stderr);
+    }
     return true;
 }
 
@@ -1805,7 +1816,7 @@ bool ggml_metal_buffer_active_ranges(ggml_metal_buffer_t buf,
         active += len;
     }
     if (!ggml_metal_buffer_unpark(buf)) return false;
-    fprintf(stderr, "LES phase-memory: expert active=%zu reserved=%zu released=%zu metal_total=%llu bytes\n",
+    if (!ggml_metal_moe_quiet()) fprintf(stderr, "moeshift: phase-memory: expert active=%zu reserved=%zu released=%zu metal_total=%llu bytes\n",
             active, buf->all_size, buf->all_size - active,
             (unsigned long long) buf->dev->mtl_device.currentAllocatedSize);
     return true;

@@ -2632,6 +2632,19 @@ ggml_status llama_context::graph_compute(
         set_n_threads_fn.second(set_n_threads_fn.first, n_threads);
     }
 
+    // LES phase IDs and I/O dependencies are interpreted only by Metal.
+    // Validate actual scheduler placement, including partial-offload fallbacks.
+    for (int i = 0; i < ggml_graph_n_nodes(gf); ++i) {
+        auto * node = ggml_graph_node(gf, i);
+        if (node->op != GGML_OP_MUL_MAT_ID || node->op_params[1] == 0) continue;
+        auto * backend = ggml_backend_sched_get_tensor_backend(sched.get(), node);
+        auto * device = backend ? ggml_backend_get_device(backend) : nullptr;
+        if (!device || std::strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(device)), "MTL") != 0) {
+            LLAMA_LOG_ERROR("moeshift: resident/missing expert operations require Metal; CPU fallback is unsupported\n");
+            return GGML_STATUS_FAILED;
+        }
+    }
+
     auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async failed with error %d\n", __func__, status);

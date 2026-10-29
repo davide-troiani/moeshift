@@ -636,6 +636,11 @@ install_timing start_demand(
     const std::vector<pending_install> & pending
 ) {
 
+    for (const auto & binding : state.dec_bindings) {
+        auto * device = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(binding.tensor->buffer));
+        if (!device || std::strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(device)), "MTL") != 0)
+            throw std::runtime_error("moeshift: asynchronous expert reads require Metal buffers");
+    }
     const size_t layer_index = size_t(&state - layers.data());
     if (demand_tickets.empty()) {
         demand_tickets.resize(layers.size(), nullptr);

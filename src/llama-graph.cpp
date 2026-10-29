@@ -1647,7 +1647,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     cur = ggml_reshape_3d(ctx0, cur, n_embd, 1, n_tokens);
 
 
-    if (arch == LLM_ARCH_QWEN4EXP && moe_decode_phase && n_tokens <= 3 &&
+    if (arch == LLM_ARCH_QWEN4EXP && moe_decode_phase && n_tokens == 1 &&
         moe_slots && !weight_before_ffn && !gate_up_exps && gate_exps && up_exps && down_exps &&
         !up_exps_b && !gate_exps_b && !down_exps_b &&
         !up_exps_s && !gate_exps_s && !down_exps_s && loras->empty()) {
@@ -1683,70 +1683,6 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         for (uint32_t i = 1; i < hparams.n_expert_used; ++i) {
             out = ggml_add(ctx0, out, rows[i]);
             ggml_build_forward_expand(gf, out);
-        }
-        cb(out, "ffn_moe_out", il);
-        return out;
-    }
-
-    // ── A2：把 MoE 拆成两段，让「已驻留专家」的计算盖住「缺失专家」的读取 ──
-    //
-    // 结构（Metal 按 split 提交，所以这个顺序天然产生重叠）：
-    //   MTL0: [位置 0..split_at) 的 gate/up → swiglu → down    ← 提交后立刻开算
-    //   CPU : phase B 节点 —— 读那些被延后的缺失专家              ← 与上面的 GPU 重叠
-    //   MTL0: [位置 split_at..8) 同样的链
-    //   MTL0: concat 回原顺序 → 加权 → 求和
-    //
-    // 只拆 ids、不拆 weights：weights 是 [1, n_expert_used, n_tokens]，expert 维
-    // 与 token 维的步长交错，切出来是非连续视图（ggml 会断言）。concat 回原顺序后
-    // 再整体加权，求和顺序与不拆完全一致 —— 输出可逐字节校验。
-    //
-    // 只在「没有 bias / 没有 per-expert scale / 没有合并 gate_up」时启用，
-    // 其它情况回退到原路径。
-    // 只在 **decode 阶段**启用，用引擎既有的 `moe_decode_phase`（图缓存 key 的一部分）
-    // 而不是自己判断 n_tokens —— prefill 与 decode 本来就不必走同一套逻辑：
-    //   - prefill 是带宽受限（93% 时间在读），重叠延迟没有意义，反而多一次 matmul
-    //   - prefill 走 mul_mm_id，它的 map0 kernel 只对特定 ne20 预编译
-    //     （实测 ne20=7/5 编译失败），decode 走 mul_mv_id 没这个限制
-    if (moe_decode_phase &&
-        moe_slots && moe_slots->uses_layer(il) && moe_slots->matmul_split() > 0 &&
-        !weight_before_ffn && !gate_up_exps && gate_exps && up_exps && down_exps &&
-        !up_exps_b && !gate_exps_b && !down_exps_b &&
-        !up_exps_s && !gate_exps_s && !down_exps_s &&
-        (int) n_expert_used > moe_slots->matmul_split()) {
-        const int split_at = (int) n_expert_used - moe_slots->matmul_split();
-        auto slice_ids = [&](ggml_tensor * t, int lo, int hi) {
-            return ggml_view_2d(ctx0, t, hi - lo, n_tokens, t->nb[1], (size_t) lo * t->nb[0]);
-        };
-
-        ggml_tensor * ids_a = slice_ids(selected_experts_mm, 0, split_at);
-        ggml_tensor * u_a = build_lora_mm_id(up_exps,   cur, ids_a);
-        ggml_tensor * g_a = build_lora_mm_id(gate_exps, cur, ids_a);
-        ggml_tensor * d_a = build_lora_mm_id(down_exps, ggml_swiglu_split(ctx0, g_a, u_a), ids_a);
-        cb(d_a, "ffn_moe_split_a", il);
-        ggml_build_forward_expand(gf, d_a);
-
-        ggml_tensor * ids_full_b = moe_slots->build_deferred_trigger(ctx0, selected_experts_mm, d_a, il);
-        cb(ids_full_b, "ffn_moe_deferred_read", il);
-
-        ggml_tensor * ids_b = slice_ids(ids_full_b, split_at, (int) n_expert_used);
-        ggml_tensor * u_b = build_lora_mm_id(up_exps,   cur, ids_b);
-        ggml_tensor * g_b = build_lora_mm_id(gate_exps, cur, ids_b);
-        ggml_tensor * d_b = build_lora_mm_id(down_exps, ggml_swiglu_split(ctx0, g_b, u_b), ids_b);
-        cb(d_b, "ffn_moe_split_b", il);
-
-        ggml_tensor * cat = ggml_concat(ctx0, d_a, d_b, 1);   // [n_embd, n_expert_used, n_tokens]
-        ggml_tensor * wsum = ggml_mul(ctx0, cat, weights);
-        cb(wsum, "ffn_moe_weighted", il);
-        ggml_build_forward_expand(gf, wsum);
-
-        ggml_tensor * out = nullptr;
-        for (uint32_t i = 0; i < (uint32_t) n_expert_used; ++i) {
-            ggml_tensor * ei = ggml_view_2d(ctx0, wsum, n_embd, n_tokens, wsum->nb[2], (size_t) i * wsum->nb[1]);
-            ggml_build_forward_expand(gf, ei);
-            out = out ? ggml_add(ctx0, out, ei) : ei;
-        }
-        if (n_expert_used == 1) {
-            out = ggml_cont(ctx0, out);
         }
         cb(out, "ffn_moe_out", il);
         return out;

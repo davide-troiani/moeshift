@@ -225,10 +225,6 @@ int run_les_router(const char * config_path, const volatile std::sig_atomic_t & 
         const auto & models = config.at("models");
         require(models.is_object() && !models.empty(), "models must be a nonempty object");
         std::set<std::string> aliases;
-        const std::set<std::string> allowed_args{
-            "model", "moe-experts", "ctx-size", "ctx-checkpoints", "prefill-max-tokens",
-            "moe-prefill-bank", "moe-decode-bank", "n-gpu-layers", "flash-attn",
-            "cache-type-k", "cache-type-v", "threads", "no-mmap", "alias"};
         const std::set<std::string> allowed_env{
             "LLAMA_GPU_KEEPALIVE", "LLAMA_MOE_DECODE_WINDOW", "LLAMA_MOE_LOOKAHEAD_PREFETCH",
             "LLAMA_MOE_PREFETCH_READ", "LLAMA_MOE_LOOKAHEAD_PREFETCH_DEPTH",
@@ -238,7 +234,7 @@ int run_les_router(const char * config_path, const volatile std::sig_atomic_t & 
             check_keys(entry.value(), {"args", "env"});
             const auto & args = entry.value().at("args");
             const auto & env = entry.value().at("env");
-            check_keys(args, allowed_args);
+            check_keys(args, moeshift_model_options);
             check_keys(env, allowed_env);
             resolve_path(base, args.at("model"));
             resolve_path(base, args.at("moe-experts"));

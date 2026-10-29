@@ -1439,8 +1439,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
             fprintf(stderr, "moeshift: adaptive-batch: tokens=%u cap=%u\n", ubatch.n_tokens, cparams.n_ubatch);
     }
     if (model.arch == LLM_ARCH_QWEN4EXP &&
-        ((moe_slots && ubatch.n_tokens <= uint32_t(moe_slots->window_max_rows())) ||
-         (gtype == LLM_GRAPH_TYPE_DECODER_MTP && ubatch.n_tokens <= 3))) {
+        moe_slots && ubatch.n_tokens <= uint32_t(moe_slots->window_max_rows())) {
         size_t reserved = 0;
         for (auto * backend : backend_ptrs) reserved += ggml_backend_sched_get_buffer_size(sched.get(), backend);
         if (reserved > 512ULL*1024*1024) {

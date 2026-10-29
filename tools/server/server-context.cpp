@@ -966,7 +966,7 @@ private:
 
             // note: for small models maybe we can set this to the maximum possible draft from all speculative types
             //       the extra memory for small models is likely negligible?
-            cparams.n_rs_seq = spec_mtp ? params_base.speculative.need_n_rs_seq() : 0;
+            cparams.n_rs_seq = 0;
             // a DFlash/DSpark draft ships no token embedding or lm head of its own and reads both
             // from the target model through this link
             cparams.ctx_other = ctx_tgt;

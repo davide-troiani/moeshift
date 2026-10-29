@@ -603,16 +603,6 @@ struct llama_moe_slot_runtime::impl {
     /// miss 在 selected_experts（按分数降序）里的**位置**直方图。
     /// 用来判断能否用「固定尾部预留」代替排序：
     /// 若 miss 集中在末尾几位，就把末尾几位划成第二组，求和顺序不变（可保逐字节一致）。
-    /// A2：每层 MoE 的 n_expert_used 里，**末尾**这么多位置允许延后读取。
-    ///
-    /// 动机：miss 高度集中在分数顺序的末尾（实测 0:0.03 ... 7:0.22）。把这些位置
-    /// 的缺失专家延后到「前面那些已驻留专家算完之后」再读，读就与 GPU 计算重叠了。
-    /// 固定按位置切（而不是按是否驻留排序切）能保持求和顺序不变 → 输出逐字节一致。
-    int32_t matmul_split = 0;
-
-    /// 每层被延后读取的 (expert, slot)，由 phase A 写入、phase B 消费。
-    std::vector<std::vector<pending_install>> deferred;
-
     uint64_t miss_pos[16] = {};
     uint64_t miss_pos_steps = 0;
     uint64_t miss_per_layer_steps = 0;
@@ -706,7 +696,6 @@ install_timing start_demand(
         n_slots(model.moe_slot_bank_size()),
         layers(model.layers.size()),
         predicted(model.layers.size()),
-        deferred(model.layers.size()),
         miss_per_layer(model.layers.size(), 0),
         userdata(model.layers.size()) {
         for (size_t il = 0; il < model.layers.size(); ++il) {
@@ -1239,54 +1228,6 @@ install_timing start_demand(
             }
             moe_log("decode-cache: 按层宽度 %s（前几层 %s）",
                     (getenv("LLAMA_MOE_LAYER_WINDOWS") ? "on" : "off（均匀）"), dist.c_str());
-        }
-
-        // ── 窗口覆盖多大的批宽 ──────────────────────────────────────────────
-        //
-        // 单 token decode 之外，投机验证（DSpark）也会送进批宽 = n_max+1 的小批次。
-        // 让它们走窗口，吃的是**跨轮**的专家复用（连续解码同一段文本，路由高度重合）。
-        // 上限由**容量**决定：必须保证「该批宽在最坏情况下的专家并集」装得进缓存区。
-        //   最坏并集 = min(行数 × top-k, n_expert)——每行最多 top-k 个，全库只有 n_expert 个。
-        //
-        // 取**各层里最窄的那个**来夹：窗口可逐层不同（LLAMA_MOE_LAYER_WINDOWS），
-        // 夹紧必须对最窄的层也成立，否则那一层会在 process() 里抛异常。
-        {
-            const char * rows_env = std::getenv("LLAMA_MOE_WINDOW_MAX_ROWS");
-            const int32_t rows_want = std::max(1, rows_env && *rows_env ? atoi(rows_env) : 1);
-
-            int32_t cache_min = 0;
-            for (size_t il = 0; il < layer_width.size() && il < layers.size(); ++il) {
-                if (!layers[il].enabled || layer_width[il] <= 0) {
-                    continue;
-                }
-                const auto & layer = model.layers[il];
-                const ggml_tensor * physical = layer.ffn_up_exps_dec ? layer.ffn_up_exps_dec : layer.ffn_gate_up_exps_dec;
-                const int32_t width = model.arch == LLM_ARCH_QWEN4EXP && physical
-                    ? int32_t(physical->ne[2]) : layer_width[il];
-                const int32_t usable = width - prefetch_slots;
-                if (usable > 0 && (cache_min == 0 || usable < cache_min)) {
-                    cache_min = usable;
-                }
-            }
-            if (cache_min <= 0) {
-                cache_min = decode_window;
-            }
-
-            const int32_t n_used = (int32_t) model.hparams.n_expert_used;
-            int32_t rows = rows_want;
-            while (rows > 1 && cache_min < std::min(rows * n_used, n_expert)) {
-                rows--;
-            }
-            window_max_rows = rows;
-
-            if (rows != rows_want) {
-                moe_log("decode-cache: 缓存区只有 %d 格，装不下 %d 行的最坏并集（%d），"
-                        "窗口适用的批宽从 %d 夹到 %d",
-                        (int) cache_min, (int) rows_want,
-                        (int) std::min(rows_want * n_used, n_expert), (int) rows_want, (int) rows);
-            }
-            moe_log("decode-cache: 窗口覆盖批宽 1..%d%s", (int) window_max_rows,
-                    window_max_rows > 1 ? "（投机验证也走窗口）" : "（只服务单 token decode）");
         }
 
         // 预读**保留**，并改成写进目标层自己的窗口（见 install_prefetch_into_window）。
@@ -2120,14 +2061,7 @@ install_timing start_demand(
     //
     // W = 0 表示关闭（退回原行为：所有层共享全部 slot、每层清空）。
     int32_t decode_window = 0;
-    /// 窗口适用的最大批宽（行数）。1 = 只服务单 token decode（旧行为）；更大的值让
-    /// 投机验证（DSpark，批宽 = n_max+1）这类**小批次**也走窗口，靠跨轮专家复用省读盘。
-    ///
-    /// 由 LLAMA_MOE_WINDOW_MAX_ROWS 给出想要值，再由 resolve_decode_window() 按
-    /// 缓存区容量夹紧 —— 夹紧是必须的：装不下时 process() 是抛异常（运行期崩），
-    /// 不是降级。上限另外受「批宽 < 32」约束：再大就走 mul_mat_id 路径，寻址不到
-    /// 每层的 `.dec` 视图。
-    int32_t window_max_rows = 1;
+    static constexpr int32_t window_max_rows = 1;
     /// 每层**预读暂存区**的 slot 数（= 预读深度 K）。
     ///
     /// 为什么单列一块：预读的条目是「下一步可能用到」，与「跨 token 复用」是两种
@@ -2421,31 +2355,6 @@ bool llama_moe_slot_runtime::uses_layer(int layer) const {
     return layer >= 0 && layer < (int) pimpl->layers.size() && pimpl->layers[layer].enabled;
 }
 
-int llama_moe_slot_runtime::matmul_split() const {
-    return pimpl->matmul_split;
-}
-
-/// A2 的 phase B 节点：把 slot_ids 拷一份作为输出（这样本节点自然依赖 phase A），
-/// 同时依赖前段专家的 matmul 输出 `b` —— 于是调度器会把它排在前段算完之后、
-/// 后段 matmul 之前执行。
-void llama_moe_slot_runtime::map_custom_deferred(
-        ggml_tensor * dst, const ggml_tensor * a, const ggml_tensor * b,
-        int ith, int nth, void * userdata) {
-    GGML_UNUSED(nth);
-    GGML_UNUSED(b);
-    if (ith != 0) {
-        return;
-    }
-    auto * data = static_cast<llama_moe_slot_runtime::impl::map_userdata *>(userdata);
-    memcpy(dst->data, a->data, ggml_nbytes(a));
-    data->runtime->process_deferred(data->layer);
-}
-
-ggml_tensor * llama_moe_slot_runtime::build_deferred_trigger(
-        ggml_context * ctx, ggml_tensor * slot_ids, ggml_tensor * dep, int layer) {
-    return ggml_map_custom2(ctx, slot_ids, dep, map_custom_deferred, 1, &pimpl->userdata[(size_t) layer]);
-}
-
 void llama_moe_slot_runtime::add_process_ns(int64_t ns) {
     pimpl->process_ns.fetch_add(ns, std::memory_order_relaxed);
 }
@@ -2613,15 +2522,10 @@ void llama_moe_slot_runtime::process(
         pimpl->stop_prefill_read();
     }
     const bool decode = n_rows == 1;
-    // 窗口也覆盖投机验证这类**小批次**（批宽 = n_max+1）：它们与单 token decode 走
-    // 同一条 mul_mv_id 路径、同一套每层 `.dec` 张量，跨轮复用同一批专家。
-    // 大批次（prefill）不走 —— 它拿的是 prefill 共享视图，只能用 [0, prefill_cap) 那段。
-    //
-    // 上限由 window_max_rows 按缓存区容量夹紧（见 resolve_decode_window），
-    // 「并集装不下」的风险在那里就被消掉，不会落到这里的运行期。
+    // Per-layer windows are used only for single-token decoding.
     const bool window_mode = pimpl->decode_window > 0 && n_rows <= pimpl->window_max_rows;
     const bool lookahead_step = pimpl->lookahead.enabled && window_mode;
-    // Prefill overwrites the same storage: finish all previous speculative reads first.
+    // Prefill overwrites the same storage: finish all previous prefetch reads first.
     if (!window_mode && pimpl->was_window) pimpl->lookahead.drain();
 
     // auto 模式下按阶段切 experts 的缓存策略：prefill 绕过、decode 不绕过。
@@ -2793,25 +2697,6 @@ void llama_moe_slot_runtime::process(
     std::vector<llama_moe_slot_runtime::impl::pending_install> pending;
     pending.reserve((size_t) std::min((int32_t) pimpl->n_slots, pimpl->n_expert));
 
-    // A2：按**名次**决定「现在读」还是「延后读」。末尾 matmul_split 个**名次**的
-    // 缺失专家延后到 phase B —— 实测 miss 高度集中在尾部（名次 7 的 miss 是名次 0
-    // 的 7 倍），那里最可能真的有东西要读。
-    //
-    // 按**固定名次**切而不是按「是否驻留」排序切，是为了保持求和顺序不变 ——
-    // 输出因此可以逐字节校验。
-    //
-    // 判据必须用**名次**（`pos % n_used`）而不是线性下标：展平顺序是
-    // `pos = 名次 + n_used * 行号`（ne[0] 变化最快，见 read_i32_ids），所以
-    // 「末尾 K 个线性下标」多行时只覆盖最后 K/n_used 行的**全部**名次；而图侧的切分
-    // （build_moe_ffn 的 slice_ids）切的是**所有行**的名次 [split_at, n_used)。
-    // 两边对不上，phase A 就会读到 phase B 还没写入的槽位（静默读错专家权重）。
-    // 单 token 时 pos == 名次，两种写法等价。
-    auto & defer_list = pimpl->deferred[(size_t) layer];
-    defer_list.clear();
-    const int32_t n_used_row = (int32_t) expert_ids->ne[0];
-    const int32_t split_at   = n_used_row - pimpl->matmul_split;
-    const bool defer_by_rank = window_mode && pimpl->matmul_split > 0 && split_at > 0;
-
     for (size_t pos = 0; pos < count; ++pos) {
         const int32_t expert = experts[pos];
         if (state.expert_to_slot[expert] >= 0) {
@@ -2877,17 +2762,9 @@ void llama_moe_slot_runtime::process(
         }
         state.slot_age[slot] = ++state.age;
         slots[pos] = slot;
-        const bool defer_this = defer_by_rank &&
-            (int32_t) (pos % (size_t) n_used_row) >= split_at;
-        if (defer_this) {
-            // 延后：槽位标 kSlotPending 占住（别处不会动它），phase B 读完再发布。
-            state.slot_to_expert[slot] = kSlotPending;
-            defer_list.push_back({ expert, slot });
-        } else {
-            state.slot_to_expert[slot] = expert;
-            state.expert_to_slot[expert] = slot;
-            pending.push_back({ expert, slot });
-        }
+        state.slot_to_expert[slot] = expert;
+        state.expert_to_slot[expert] = slot;
+        pending.push_back({ expert, slot });
     }
 
     int n_unique = 0;
@@ -3072,39 +2949,4 @@ void llama_moe_slot_runtime::process(
         pimpl->write_i32_ids(slot_ids, slots);
         pimpl->writeids_ns.fetch_add(now_ns() - t0, std::memory_order_relaxed);
     }
-}
-
-/// A2 的 phase B：把 phase A 里被延后的缺失专家读进来，并发布到窗口。
-///
-/// 调用时机：**在「前段专家（位置 < n - matmul_split）已经算完」之后**。
-/// 那时 GPU 正在算那些已驻留的专家，这里的读就与它重叠了 —— 这是整个 A2 的收益来源。
-///
-/// 锁：读盘不持锁（槽位在 phase A 已标 kSlotPending，别处不会动它）；只有发布
-/// （写 expert_to_slot / slot_to_expert）才持层锁，和预读 worker 的写法一致。
-void llama_moe_slot_runtime::process_deferred(int layer) {
-    if (layer < 0 || layer >= (int) pimpl->deferred.size()) {
-        return;
-    }
-    auto & list = pimpl->deferred[(size_t) layer];
-    if (list.empty()) {
-        return;
-    }
-    auto & st = pimpl->layers[(size_t) layer];
-    if (!st.enabled) {
-        list.clear();
-        return;
-    }
-
-    for (const auto & d : list) {
-        pimpl->read_expert_directv(st, d.expert, d.slot, true);
-    }
-    {
-        std::lock_guard<std::mutex> lk(st.mutex);
-        for (const auto & d : list) {
-            st.slot_to_expert[(size_t) d.slot] = d.expert;
-            st.expert_to_slot[(size_t) d.expert] = d.slot;
-        }
-        st.n_prefetch_published += list.size();
-    }
-    list.clear();
 }

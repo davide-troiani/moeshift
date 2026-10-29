@@ -12,7 +12,6 @@
 #include "llama.h"
 
 #include <atomic>
-#include <algorithm>
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
@@ -91,6 +90,19 @@ int main(int argc, char ** argv) {
     ++argv;
     worker_parent_guard parent_guard;
 
+    for (int i = 1; i < argc; ++i) {
+        const std::string option(argv[i]);
+        if (option.size() <= 2 || option.substr(0, 2) != "--" ||
+            (!moeshift_model_options.count(option.substr(2)) && option != "--host" && option != "--port")) {
+            std::cerr << "moeshift: Unsupported worker option: " << option << "\n";
+            return 1;
+        }
+        if (option != "--no-mmap" && ++i == argc) {
+            std::cerr << "moeshift: Missing worker option value\n";
+            return 1;
+        }
+    }
+
     common_params params;
 
     common_init();
@@ -105,10 +117,9 @@ int main(int argc, char ** argv) {
     params.hostname = "127.0.0.1";
     setenv("LLAMA_MOE_F_NOCACHE", "0", 1);
 
-    if (std::any_of(params.speculative.types.begin(), params.speculative.types.end(),
-            [](common_speculative_type type) { return type != COMMON_SPECULATIVE_TYPE_NONE; }) ||
-        params.moe_experts.empty() || params.les_decode_bank >= params.les_prefill_bank) {
-        std::cerr << "moeshift: adaptive expert streaming requires spec-type=none, MoE experts, and decode bank < prefill bank\n";
+    params.speculative = {};
+    if (params.moe_experts.empty() || params.les_decode_bank >= params.les_prefill_bank) {
+        std::cerr << "moeshift: adaptive expert streaming requires MoE experts and decode bank < prefill bank\n";
         return 1;
     }
     // Enable growing KV buffers for LES; other clients retain the original allocator.

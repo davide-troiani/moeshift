@@ -2329,14 +2329,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                     }
 
                     if (needs_mem_idx) {
-                        const uint32_t n_main = hparams.n_layer - hparams.nextn_predict_layers;
-                        const bool mtp = params.ctx_type == LLAMA_CONTEXT_TYPE_MTP;
-                        filter_attn = [&, n_main, mtp](int32_t il) {
-                            return ((uint32_t) il >= n_main) == mtp && !hparams.is_recurrent(il);
-                        };
-                        filter_recr = [&, n_main, mtp](int32_t il) {
-                            return !mtp && (uint32_t) il < n_main && hparams.is_recurrent(il);
-                        };
+                        filter_attn = [&](int32_t il) { return !hparams.is_recurrent(il); };
+                        filter_recr = [&](int32_t il) { return hparams.is_recurrent(il); };
                         filter_idx = filter_attn;
                     }
 

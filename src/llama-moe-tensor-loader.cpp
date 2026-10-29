@@ -63,14 +63,10 @@ llama_moe_tensor_loader::llama_moe_tensor_loader(llama_model_base & model, llama
                 bytes += width_of(il) * e->bytes_per_expert;
             }
             if (model.arch == LLM_ARCH_QWEN4EXP && dec_enabled) {
-                const char * rows_env = std::getenv("LLAMA_MOE_WINDOW_MAX_ROWS");
-                const int rows = rows_env ? std::atoi(rows_env) : 1;
-                GGML_ASSERT(rows >= 1 && rows <= 3);
                 size_t stride_sum = 0;
                 for (int il : kv.second)
                     stride_sum += model.moe_experts_entry(tn(fam_ids[fi], "weight", il).str().c_str())->bytes_per_expert;
-                const size_t required = std::min(rows * int(model.hparams.n_expert_used),
-                                                int(model.hparams.n_expert)) + k_pf;
+                const size_t required = model.hparams.n_expert_used + k_pf;
                 bytes = std::max(bytes, required * stride_sum);
             }
             group_slots[tn(fam_ids[fi], "weight", kv.second.front()).str()] =

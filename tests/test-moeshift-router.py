@@ -162,6 +162,13 @@ class RouterTest(unittest.TestCase):
                                     capture_output=True, timeout=5)
             self.assertNotEqual(result.returncode, 0)
 
+    def test_worker_rejects_speculative_options(self):
+        for option in ("--spec-type", "--model-draft", "--parallel"):
+            result = subprocess.run([BINARY, "--worker", option, "none"],
+                                    capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(b"Unsupported worker option", result.stderr)
+
     def test_cli_overrides(self):
         self.stop()
         self.proc = subprocess.Popen(

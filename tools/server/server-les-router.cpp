@@ -126,7 +126,7 @@ struct les_worker {
             const std::string value(*entry);
             const auto separator = value.find('=');
             const auto key = value.substr(0, separator);
-            if (key.rfind("LLAMA_ARG_", 0) && key.rfind("LLAMA_MOE_", 0) && key != "LLAMA_GPU_KEEPALIVE" && key != "LLAMA_KV_GROW" && key.rfind("LLAMA_QWEN_", 0)) {
+            if (key.rfind("LLAMA_", 0) && key.rfind("GGML_", 0) && key.rfind("LES_", 0) && key.rfind("MB_", 0)) {
                 env[key] = value.substr(separator + 1);
             }
         }

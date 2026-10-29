@@ -89,7 +89,7 @@ int main(int argc, char ** argv) {
         return 1;
     }
     // Enable growing KV buffers for LES; other clients retain the original allocator.
-    setenv("LLAMA_KV_GROW", "1", 0);
+    setenv("LLAMA_KV_GROW", "1", 1);
     params.n_batch = params.n_ubatch = params.les_prefill_max_tokens;
     params.moe_slot_bank = params.les_prefill_bank;
     setenv("LLAMA_LES_DECODE_BANK", std::to_string(params.les_decode_bank).c_str(), 1);

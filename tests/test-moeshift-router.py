@@ -30,7 +30,7 @@ def fake_worker():
         args[key] = True if key == "--no-mmap" else next(values)
     if args["--model"].endswith("fail.gguf"):
         return 1
-    log_path = os.environ["LES_ROUTER_TEST_LOG"]
+    log_path = os.environ["MOESHIFT_ROUTER_TEST_LOG"]
 
     def log(event):
         with open(log_path, "a") as output:
@@ -61,7 +61,7 @@ def fake_worker():
                 self.end_headers()
                 self.wfile.write(json.dumps({
                     "pid": os.getpid(), "args": args, "path": self.path,
-                    "env": {key: value for key, value in os.environ.items() if key.startswith("LLAMA_")},
+                    "env": {key: value for key, value in os.environ.items() if key.startswith(("LLAMA_", "GGML_", "LES_", "MB_"))},
                 }).encode())
             log("request_end")
 
@@ -102,8 +102,11 @@ class RouterTest(unittest.TestCase):
         self.path.write_text(json.dumps(self.config))
         self.log = open(self.root / "router.log", "w+")
         self.addCleanup(self.log.close)
-        env = dict(os.environ, LES_ROUTER_TEST_LOG=str(self.events), LLAMA_MOE_F_NOCACHE="1",
-                   LLAMA_MOE_PROTECTED_POLICY="ignored", LLAMA_ARG_THREADS="999")
+        env = dict(os.environ, MOESHIFT_ROUTER_TEST_LOG=str(self.events), LLAMA_MOE_F_NOCACHE="1",
+                   LLAMA_MOE_PROTECTED_POLICY="ignored", LLAMA_ARG_THREADS="999",
+                   LLAMA_LES_DECODE_BANK="511", LLAMA_KV_GROW="0",
+                   LLAMA_GRAPH_REUSE_DISABLE="1", LLAMA_QWEN_SEPARATE_PREFILL_BANKS="1",
+                   GGML_METAL_FUSION_DISABLE="1", LES_BLOCK_DIAG="1", MB_DUMP_INP_EMBD="1")
         self.proc = subprocess.Popen([BINARY, "--config", str(self.path)], env=env,
                                      stdout=self.log, stderr=self.log)
         self.addCleanup(self.stop)
@@ -145,6 +148,14 @@ class RouterTest(unittest.TestCase):
         self.assertEqual(status, 200, body)
         return body
 
+    def test_runtime_environment_cannot_override_profile(self):
+        worker = self.infer("a")
+        for key in ("LLAMA_LES_DECODE_BANK", "LLAMA_KV_GROW", "LLAMA_GRAPH_REUSE_DISABLE",
+                    "LLAMA_QWEN_SEPARATE_PREFILL_BANKS", "GGML_METAL_FUSION_DISABLE",
+                    "LES_BLOCK_DIAG", "MB_DUMP_INP_EMBD"):
+            self.assertNotIn(key, worker["env"])
+        self.assertEqual(worker["env"]["LLAMA_MOE_DECODE_WINDOW"], "2")
+
     def test_reject_parallel_and_external_host(self):
         for args in (("--parallel", "2"), ("--host", "0.0.0.0")):
             result = subprocess.run([BINARY, "--config", str(self.path), *args],
@@ -156,7 +167,7 @@ class RouterTest(unittest.TestCase):
         self.proc = subprocess.Popen(
             [BINARY, "--config", str(self.path), "--ctx-size", "8192",
              "--moe-protected-slots", "23", "--moe-decode-window", "12"],
-            env=dict(os.environ, LES_ROUTER_TEST_LOG=str(self.events)),
+            env=dict(os.environ, MOESHIFT_ROUTER_TEST_LOG=str(self.events)),
             stdout=self.log, stderr=self.log)
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:

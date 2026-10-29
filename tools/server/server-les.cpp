@@ -128,7 +128,7 @@ int main(int argc, char ** argv) {
     params.moe_slot_bank = params.les_prefill_bank;
     setenv("LLAMA_LES_DECODE_BANK", std::to_string(params.les_decode_bank).c_str(), 1);
     const char * moe_quiet = std::getenv("LLAMA_MOE_QUIET");
-    if (!moe_quiet || std::string(moe_quiet) != "1") {
+    if (moe_quiet && std::string(moe_quiet) != "1") {
         std::cerr << "moeshift: adaptive: prefill-max=" << params.n_ubatch
                   << " shared-bank=" << params.les_prefill_bank << " -> " << params.les_decode_bank << "\n";
     }

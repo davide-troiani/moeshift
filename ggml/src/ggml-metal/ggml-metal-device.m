@@ -16,7 +16,7 @@
 
 static bool ggml_metal_moe_quiet(void) {
     const char * value = getenv("LLAMA_MOE_QUIET");
-    return value && strcmp(value, "1") == 0;
+    return !value || strcmp(value, "1") == 0;
 }
 
 #ifndef TARGET_OS_VISION

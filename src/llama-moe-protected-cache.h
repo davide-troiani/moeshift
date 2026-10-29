@@ -8,7 +8,7 @@
 #include <vector>
 
 inline int les_parse_protected_slots(const char * value, int maximum) {
-    if (!value) return 23;
+    if (!value) return 24;
     if (!*value || *value < '0' || *value > '9')
         throw std::invalid_argument("LLAMA_MOE_PROTECTED_SLOTS must be a nonnegative integer");
     char * end = nullptr;

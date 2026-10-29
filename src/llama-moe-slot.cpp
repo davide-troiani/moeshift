@@ -84,7 +84,7 @@ static int64_t now_ns() {
 // Xcode 能抓住 stderr（和 [MBMtmd] 一样）。llama-cli 的 callback 会吞掉纯 LLAMA_LOG_INFO。
 static void moe_log(const char * fmt, ...) {
     const char * quiet = std::getenv("LLAMA_MOE_QUIET");
-    if (quiet && quiet[0] == '1' && quiet[1] == '\0') {
+    if (!quiet || (quiet[0] == '1' && quiet[1] == '\0')) {
         return;
     }
     char buf[768];

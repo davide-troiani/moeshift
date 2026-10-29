@@ -108,7 +108,7 @@ static void test_demand_lrfu() {
 }
 
 int main() {
-    assert(les_parse_protected_slots(nullptr, 497) == 23);
+    assert(les_parse_protected_slots(nullptr, 497) == 24);
     assert(les_parse_protected_slots("0", 497) == 0);
     assert(les_parse_protected_slots("497", 497) == 497);
     for (const char * invalid : {"", "-1", "+1", "1x", "498", "999999999999999999999999"}) {

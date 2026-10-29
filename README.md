@@ -95,7 +95,7 @@ single source of runtime tuning: shell variables starting with `LLAMA_`, `GGML_`
 1; external hosts and speculative-decoding options are rejected.
 
 The shipped LRFU profile uses a 12-slot decode window, prediction depth 3 and
-32 protected slots per layer. Positive protected slots require that combination
+24 protected slots per layer. Positive protected slots require that combination
 and enabled prefetch. The policy scores actual router demand with a 32-step
 half-life; it does not change routing top-k, expert weights or precision.
 
@@ -112,12 +112,12 @@ half-life; it does not change routing top-k, expert weights or precision.
 | `args.cache-type-k`, `args.cache-type-v` | `q8_0` KV quantization; the indexer stores keys only |
 | `args.no-mmap` | `true`; explicit reads for Qwen weights |
 | `env.LLAMA_MOE_DECODE_WINDOW` | `12` decode slots per layer |
-| `env.LLAMA_MOE_PROTECTED_SLOTS` | `32` additional protected slots; `0` disables the protected tier |
+| `env.LLAMA_MOE_PROTECTED_SLOTS` | `24` additional protected slots; `0` disables the protected tier |
 | `env.LLAMA_MOE_LOOKAHEAD_PREFETCH` | `1`; enable predictive expert reads |
 | `env.LLAMA_MOE_LOOKAHEAD_PREFETCH_DEPTH`, `env.LLAMA_MOE_PREFETCH_READ` | Predict `3` experts, read `2` |
 | `env.LLAMA_MOE_PREFILL_PIPELINE` | `1`; overlap prefill reads with computation |
 | `env.LLAMA_GPU_KEEPALIVE` | `1`; keep the GPU active while the worker exists; `0` disables it |
-| `env.LLAMA_MOE_QUIET` | `0`; keep expert diagnostics; `1` suppresses them |
+| `env.LLAMA_MOE_QUIET` | `1`; suppress expert diagnostics; `0` enables them |
 
 Use the argument names as CLI overrides (`--ctx-size`, `--threads`, etc.).
 `--no-mmap true/false` overrides its JSON boolean. Cache overrides are

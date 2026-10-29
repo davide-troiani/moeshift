@@ -1425,7 +1425,7 @@ struct fw_probe_guard {
 
 llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
     const char * moe_quiet = std::getenv("LLAMA_MOE_QUIET");
-    const bool quiet = moe_quiet && std::strcmp(moe_quiet, "1") == 0;
+    const bool quiet = !moe_quiet || std::strcmp(moe_quiet, "1") == 0;
     if (moe_slots) {
         moe_slots->ensure_unparked();
         const bool decode = ubatch.n_tokens <= uint32_t(moe_slots->window_max_rows());

@@ -20,14 +20,14 @@
         "alias": "moeshift"
       },
       "env": {
-        "LLAMA_MOE_QUIET": 0,
+        "LLAMA_MOE_QUIET": 1,
         "LLAMA_GPU_KEEPALIVE": 1,
         "LLAMA_MOE_DECODE_WINDOW": 12,
         "LLAMA_MOE_LOOKAHEAD_PREFETCH": 1,
         "LLAMA_MOE_PREFETCH_READ": 2,
         "LLAMA_MOE_LOOKAHEAD_PREFETCH_DEPTH": 3,
         "LLAMA_MOE_PREFILL_PIPELINE": 1,
-        "LLAMA_MOE_PROTECTED_SLOTS": 32
+        "LLAMA_MOE_PROTECTED_SLOTS": 24
       }
     }
   }

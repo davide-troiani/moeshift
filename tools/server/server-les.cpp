@@ -15,12 +15,34 @@
 #include <algorithm>
 #include <chrono>
 #include <csignal>
+#include <cstdlib>
+#include <unistd.h>
 #include <iostream>
 #include <filesystem>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #endif
 #include <thread>
+
+// The router owns the worker, including its Metal queues, even after SIGKILL.
+class worker_parent_guard {
+    std::atomic<bool> stopped{false};
+    std::thread watcher;
+public:
+    worker_parent_guard() : watcher([this, parent = getppid()] {
+        while (!stopped.load(std::memory_order_relaxed)) {
+            if (parent == 1 || getppid() != parent) {
+                std::fputs("moeshift: server exited; stopping orphan worker\n", stderr);
+                std::_Exit(EXIT_FAILURE);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }) {}
+    ~worker_parent_guard() {
+        stopped.store(true, std::memory_order_relaxed);
+        watcher.join();
+    }
+};
 
 static volatile std::sig_atomic_t stop_requested = 0;
 
@@ -67,6 +89,7 @@ int main(int argc, char ** argv) {
     }
     --argc;
     ++argv;
+    worker_parent_guard parent_guard;
 
     common_params params;
 

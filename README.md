@@ -174,6 +174,12 @@ model identifiers. `POST /v1/chat/completions` accepts `messages`;
 `POST /v1/completions` accepts `prompt`. Set `stream: true` for SSE streaming,
 ending with `data: [DONE]`.
 
+## Architecture
+
+Read the [MoEShift architecture](docs/architecture.md) for the project’s design:
+LES (Lookahead Expert Scheduling), expert loading and Metal execution, cache
+policy, memory management, and server/worker lifetimes.
+
 ## Feedback and issues
 
 Found a problem or have an idea?
@@ -185,12 +191,6 @@ Choose **Bug report** for installation, startup or inference problems, or
 information: your Mac chip and RAM, macOS version, MoEShift version, model files,
 steps to reproduce and relevant Terminal output. Remove private prompts,
 credentials and personal paths before posting.
-
-## Architecture
-
-Read the [MoEShift architecture](docs/architecture.md) for the project’s design:
-LES (Lookahead Expert Scheduling), expert loading and Metal execution, cache
-policy, memory management, and server/worker lifetimes.
 
 ## Documentation scope
 

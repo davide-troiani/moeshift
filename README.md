@@ -114,7 +114,47 @@ Inside `models` → `qwen-3.8-flash-next-rco-gsq-iq3-xxs` → `args`, replace th
 Use full paths in JSON (not `~` or `$HOME`), keep the quotes and commas, and save.
 Leave the other settings at their defaults for your first run.
 
-### Adjust speed and memory use
+
+## 5. Start MoEShift
+
+```sh
+moeshift
+```
+
+Leave this Terminal open. MoEShift starts a local server at
+`http://127.0.0.1:8080`. Stop it with **Ctrl-C**. Next time, just run the same
+command; you do not need to repeat the model preparation.
+
+### Try a message from Terminal
+
+Open another Terminal and run:
+
+```sh
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen-3.8-flash-next-rco-gsq-iq3-xxs","messages":[{"role":"user","content":"Say hello in one sentence."}],"chat_template_kwargs":{"enable_thinking":false},"max_tokens":128,"stream":false}'
+```
+
+### Connect your chat or coding application
+
+In any client that supports an OpenAI-compatible API, enter:
+
+| Field | Value |
+|---|---|
+| Base URL | `http://127.0.0.1:8080/v1` |
+| Model | `qwen-3.8-flash-next-rco-gsq-iq3-xxs` |
+
+MoEShift handles one inference request at a time and listens only on localhost.
+
+
+## Architecture
+
+Read the [MoEShift architecture](docs/architecture.md) for the project’s design:
+LES (Lookahead Expert Scheduling), expert loading and Metal execution, cache
+policy, memory management, and server/worker lifetimes.
+
+
+## Adjust speed and memory use
 
 You can adjust these settings in the configuration file to suit your Mac.
 With more RAM, you can increase `moe-prefill-bank` and
@@ -137,48 +177,6 @@ The default settings are tuned for Qwen 3.8 Flash Next RCO GSQ IQ3 XXS on Mac mi
 [full configuration reference](configs/README.md) covers the remaining options,
 valid combinations and command-line overrides. Settings under `env` are edited
 in this file, rather than exported in Terminal.
-
-## 5. Start MoEShift
-
-```sh
-moeshift
-```
-
-Leave this Terminal open. MoEShift starts a local server at
-`http://127.0.0.1:8080`. Stop it with **Ctrl-C**. Next time, just run the same
-command; you do not need to repeat the model preparation.
-
-### Connect your chat or coding application
-
-In any client that supports an OpenAI-compatible API, enter:
-
-| Field | Value |
-|---|---|
-| Base URL | `http://127.0.0.1:8080/v1` |
-| Model | `qwen-3.8-flash-next-rco-gsq-iq3-xxs` |
-
-MoEShift handles one inference request at a time and listens only on localhost.
-
-### Try a message from Terminal
-
-Open another Terminal and run:
-
-```sh
-curl http://127.0.0.1:8080/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"qwen-3.8-flash-next-rco-gsq-iq3-xxs","messages":[{"role":"user","content":"Say hello in one sentence."}],"chat_template_kwargs":{"enable_thinking":false},"max_tokens":128,"stream":false}'
-```
-
-For API integrations: `GET /health` checks the server; `GET /v1/models` lists
-model identifiers. `POST /v1/chat/completions` accepts `messages`;
-`POST /v1/completions` accepts `prompt`. Set `stream: true` for SSE streaming,
-ending with `data: [DONE]`.
-
-## Architecture
-
-Read the [MoEShift architecture](docs/architecture.md) for the project’s design:
-LES (Lookahead Expert Scheduling), expert loading and Metal execution, cache
-policy, memory management, and server/worker lifetimes.
 
 ## Feedback and issues
 

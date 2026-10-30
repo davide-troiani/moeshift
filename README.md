@@ -11,6 +11,10 @@ MoEShift leaves room for your other apps, helping your Mac stay responsive durin
 instead of grinding to a halt under memory pressure. Keep browsing, writing
 and coding while the model works—all locally, with no cloud subscription.
 
+![Qwen 3.8 Flash Next running locally with MoEShift in OpenCode](assets/moeshift-opencode-demo.gif)
+
+*Qwen 3.8 Flash Next running locally with MoEShift, connected to OpenCode.*
+
 **Alpha release.** The core runtime is working, and the project is evolving
 quickly. You may encounter rough edges; your feedback helps shape the next release. This build
 was tested using ISTA-DASLab GSQ-RCO IQ3_XXS so far.

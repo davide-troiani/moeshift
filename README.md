@@ -187,10 +187,33 @@ Found a problem or have an idea?
 after checking whether someone has already reported it.
 
 Choose **Bug report** for installation, startup or inference problems, or
-**Feature request** for suggestions. The form guides you through the useful
+**Feature request** for suggestions, or **Benchmark result** to share measurements
+from your Mac. The form guides you through the useful
 information: your Mac chip and RAM, macOS version, MoEShift version, model files,
 steps to reproduce and relevant Terminal output. Remove private prompts,
 credentials and personal paths before posting.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for fixes, suggestions and pull requests.
+
+### Share how MoEShift runs on your Mac
+
+**Help someone with a Mac like yours decide whether MoEShift fits their day.**
+Can you keep browsing in Safari while it answers? How does it feel on battery,
+or with your usual apps open? Share a benchmark from your MacBook, Mac mini or
+Mac Studio—every chip and memory size adds a useful piece of the picture.
+
+You do not need a perfectly idle machine. Keep your normal setup and tell us
+what you were doing. The [benchmark runner](benchmarks/README.md) handles the
+fixed short and long prompts, repeats the measurements and creates a JSON report
+for you. It collects benchmark metrics only; you describe your Mac and working
+conditions yourself.
+
+Then [share your results](https://github.com/davide-troiani/moeshift/issues/new?template=benchmark_result.yml)
+and attach the report. Screenshots and a few words about how responsive your
+other apps felt are welcome too. Your experience can help the next user find
+out what to expect—and help us see where MoEShift needs to improve.
 
 ## Documentation scope
 

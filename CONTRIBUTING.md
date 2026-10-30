@@ -6,7 +6,7 @@ on Macs with Apple Silicon, optimized for Qwen 3.8 Flash Next.
 ## Issues and pull requests
 
 - Search [existing issues](https://github.com/davide-troiani/moeshift/issues).
-  Use the issue forms for bugs and suggestions.
+  Use the issue forms for bugs, suggestions and benchmark results.
 - Open an issue before substantial changes so we can agree on scope. Small fixes
   can go straight to a pull request.
 - Keep each PR focused. Describe the problem, the change and how you tested it.
@@ -19,6 +19,14 @@ on Macs with Apple Silicon, optimized for Qwen 3.8 Flash Next.
 There is no required reviewer count or release schedule. The maintainer reviews
 and merges changes. Build outputs, model weights, generated expert files,
 credentials and personal configurations must stay out of commits.
+
+## Share benchmarks
+
+Follow the [community benchmark instructions](benchmarks/README.md) and attach
+the JSON report to a **Benchmark result** issue. Different Macs, battery use and
+other applications running alongside inference are welcome: describe your
+hardware, configuration and conditions manually. The runner does not collect
+system or personal information. Screenshots are optional.
 
 ## Build and test
 

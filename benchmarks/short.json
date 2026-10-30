@@ -1,0 +1,17 @@
+{
+  "model": "qwen-3.8-flash-next-rco-gsq-iq3-xxs",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Explain how a local language model can remain useful while someone browses the web, edits documents, and listens to music on the same computer. Discuss memory, storage, response time, and practical tradeoffs. Give a clear answer for a nontechnical reader using concrete examples and complete sentences."
+    }
+  ],
+  "chat_template_kwargs": {
+    "enable_thinking": false
+  },
+  "max_tokens": 512,
+  "temperature": 0,
+  "seed": 42,
+  "cache_prompt": false,
+  "stream": false
+}

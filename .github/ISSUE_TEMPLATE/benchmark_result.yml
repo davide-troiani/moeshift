@@ -1,0 +1,47 @@
+name: Benchmark result
+description: Share the fixed short and long benchmarks from your Mac.
+title: "[Benchmark]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Follow [benchmarks/README.md](https://github.com/davide-troiani/moeshift/blob/main/benchmarks/README.md).
+        Keep your normal working conditions and describe them below. Review attachments before posting.
+        Screenshots are optional; the JSON report is preferred. Do not attach models, credentials or personal paths.
+  - type: input
+    id: hardware
+    attributes:
+      label: Mac model, chip and unified memory
+      placeholder: "MacBook Pro, M4 Pro, 24 GB RAM"
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: macOS and MoEShift versions
+      description: "For Homebrew: brew list --versions moeshift. For source builds: git rev-parse HEAD, plus build options."
+    validations:
+      required: true
+  - type: textarea
+    id: model_configuration
+    attributes:
+      label: Model, storage and configuration
+      description: "Model source/revision, quantization and GGUF filenames; did experts.py verify succeed? Internal/external SSD? State default settings or list changed args/env values, without personal paths."
+      placeholder: "Recommended IQ3_XXS, verified experts, internal SSD, default configuration"
+    validations:
+      required: true
+  - type: textarea
+    id: conditions
+    attributes:
+      label: Conditions during the benchmark
+      description: "Describe freely: apps/workloads running, battery or external power, Low Power Mode, or anything else relevant. Optional memory/swap readings should state the metric and when they were taken."
+      placeholder: "On battery, Low Power Mode off, Safari with 12 tabs and music playing."
+    validations:
+      required: true
+  - type: textarea
+    id: results
+    attributes:
+      label: Benchmark results
+      description: "Attach benchmark-results.json here (drag and drop). For manual curl runs, paste the timings, usage and finish_reason from the warmup and all three measured runs for each prompt, and report their medians. Note any deviations. Screenshots are optional."
+    validations:
+      required: true

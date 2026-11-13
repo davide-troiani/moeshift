@@ -10,6 +10,7 @@ from pathlib import Path
 import signal
 import socket
 import subprocess
+import struct
 import sys
 import tempfile
 import threading
@@ -97,6 +98,10 @@ class RouterTest(unittest.TestCase):
             value["args"].update({"alias": name, "model": f"{name}.gguf", "ctx-size": ctx})
             value["env"]["LLAMA_MOE_DECODE_WINDOW"] = ctx // 1024
             value["env"]["LLAMA_MOE_PROTECTED_SLOTS"] = 0
+            if name == "b":
+                for key in ("moe-experts", "moe-prefill-bank", "moe-decode-bank", "prefill-max-tokens"):
+                    value["args"].pop(key, None)
+                del value["env"]
             self.config["models"][name] = value
         self.path = self.root / "server.json"
         self.path.write_text(json.dumps(self.config))
@@ -171,6 +176,8 @@ class RouterTest(unittest.TestCase):
 
     def test_cli_overrides(self):
         self.stop()
+        del self.config["models"]["b"]
+        self.path.write_text(json.dumps(self.config))
         self.proc = subprocess.Popen(
             [BINARY, "--config", str(self.path), "--ctx-size", "8192",
              "--moe-protected-slots", "23", "--moe-decode-window", "12"],
@@ -207,7 +214,8 @@ class RouterTest(unittest.TestCase):
         self.assertNotEqual(a["pid"], b["pid"])
         self.assertEqual(b["args"]["--ctx-size"], "4096")
         self.assertEqual(b["path"], "/v1/completions")
-        self.assertEqual(b["env"]["LLAMA_MOE_DECODE_WINDOW"], "4")
+        self.assertNotIn("--moe-experts", b["args"])
+        self.assertEqual(b["env"], {"LLAMA_MOE_F_NOCACHE": "0"})
         self.assertEqual(self.request("POST", "/v1/completions", {"model": "fail"})[0], 503)
         recovered = self.infer("a")
         os.kill(recovered["pid"], signal.SIGKILL)
@@ -265,6 +273,51 @@ class RouterTest(unittest.TestCase):
         self.assertNotIn("LES router", output)
         for line in output.splitlines():
             if line.strip(): self.assertIn("moeshift", line)
+
+    def test_generic_profile_rejects_expert_tuning(self):
+        self.stop()
+        profile = self.config["models"]["b"]
+        for key in ("moe-prefill-bank", "moe-decode-bank", "prefill-max-tokens"):
+            profile["args"][key] = 12
+            self.path.write_text(json.dumps(self.config))
+            result = subprocess.run([BINARY, "--config", str(self.path)], capture_output=True, timeout=5)
+            self.assertIn((key + " requires moe-experts").encode(), result.stderr)
+            del profile["args"][key]
+        profile["env"] = {"LLAMA_GPU_KEEPALIVE": "1"}
+        self.path.write_text(json.dumps(self.config))
+        result = subprocess.run([BINARY, "--config", str(self.path)], capture_output=True, timeout=5)
+        self.assertIn(b"require moe-experts", result.stderr)
+
+    def test_worker_rejects_experts_for_other_architecture(self):
+        # A metadata-only GGUF needs no model download or Python GGUF dependencies.
+        model = self.root / "llama.gguf"
+        def string(value):
+            data = value.encode()
+            return struct.pack("<Q", len(data)) + data
+        model.write_bytes(struct.pack("<4sIQQ", b"GGUF", 3, 0, 1) +
+                          string("general.architecture") + struct.pack("<I", 8) + string("llama"))
+        result = subprocess.run([BINARY, "--worker", "--model", str(model),
+                                 "--moe-experts", str(self.root / "experts")],
+                                capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b"moe-experts requires a qwen4exp or qwen35moe", result.stderr)
+        result = subprocess.run([BINARY, "--worker", "--model", str(model)],
+                                capture_output=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn(b"adaptive expert streaming requires", result.stderr)
+        self.assertNotIn(b"keepalive:", result.stderr)
+        self.assertIn(b"Model loading failed", result.stderr)
+        for arch in ("qwen4exp", "qwen35moe"):
+            model.write_bytes(struct.pack("<4sIQQ", b"GGUF", 3, 0, 1) +
+                             string("general.architecture") + struct.pack("<I", 8) + string(arch))
+            result = subprocess.run([BINARY, "--worker", "--model", str(model),
+                                     "--moe-experts", str(self.root / "missing-experts")],
+                                    env=dict(os.environ, LLAMA_GPU_KEEPALIVE="0"),
+                                    capture_output=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn(b"moe-experts requires a qwen4exp or qwen35moe", result.stderr)
+            self.assertTrue(b"manifest" in result.stderr or b"requires a build with Metal" in result.stderr,
+                            result.stderr)
 
     def test_reject_removed_configuration(self):
         self.stop()

@@ -5,9 +5,14 @@ separates the memory needed to execute selected experts from the storage needed 
 
 The public application is a localhost HTTP server. One model worker owns the
 inference resources, and one inference request runs at a time. The JSON
-configuration contains a profile for each tested model.
+configuration contains a model configuration for each tested model.
 
 ## Supported LLM architectures
+
+See [supported models and tools](supported-architectures.md) for model availability
+and verification status. The table below describes the two architectures optimized
+for SSD streaming. Other GGUF models use the standard inference path in the same
+localhost server.
 
 | GGUF architecture | Tested model | Model-specific graph |
 |---|---|---|
@@ -39,14 +44,14 @@ preparation preserves the original quantized weight bytes.
 
 The supported application boundary is macOS on Apple Silicon with Metal and
 localhost HTTP access. Inference parallelism is fixed to one; speculative
-decoding is not part of the MoEShift execution profile.
+decoding is not part of the MoEShift execution settings.
 
 ## 2. Component model
 
 ```mermaid
 flowchart TB
     Client[Local chat or coding client] --> HTTP[Localhost HTTP server]
-    Config[JSON model profile and CLI overrides] --> HTTP
+    Config[JSON model configuration and CLI overrides] --> HTTP
     HTTP -->|one inference lease| Worker[Model worker]
     Worker --> Qwen[Qwen model graph and router]
     Qwen --> LES[LES expert scheduler]
@@ -103,15 +108,15 @@ The server resolves one JSON configuration and applies supported CLI overrides.
 If no local or user configuration exists, the installed template is copied to
 the user configuration path on first launch, preserving existing files.
 Relative model paths resolve against the configuration's directory. Runtime
-settings belong to the profile: inherited shell tuning variables are filtered
+settings belong to the model configuration: inherited shell tuning variables are filtered
 before the worker environment is constructed.
 
 The public endpoints are health, model discovery, chat completions and text
-completions. Model discovery describes configured profiles; server health does
+completions. Model discovery describes configured model configurations; server health does
 not by itself establish model readiness.
 
 An inference request acquires exclusive ownership of the inference path. The
-server reuses a live worker for the same profile. Switching profiles stops the
+server reuses a live worker for the same model configuration. Switching models stops the
 previous worker before starting another. Requests arriving while inference is
 busy wait for the current response to release that ownership; this includes the
 entire lifetime of an SSE stream.
@@ -189,7 +194,7 @@ Prefill processes prompt microbatches using a shared expert bank. Decode uses
 smaller per-layer expert windows so that repeated token generation does not
 require retaining the full prefill bank.
 
-The profiles use 512 prefill slots for Flash Next or 256 for Qwen3.6, a zero-slot retained shared
+The model configurations use 512 prefill slots for Flash Next or 256 for Qwen3.6, a zero-slot retained shared
 decode bank, and a separate per-layer decode allocation of **39 slots**:
 12 decode slots plus 3 prefetch slots form the 15-slot recent group, with
 24 additional protected slots. A slot holds the packed tensors for one expert;
@@ -250,7 +255,7 @@ Expert offloading addresses only one part of the process's memory requirements.
 |---|---|
 | Resident model tensors | Loaded for the worker; determined by the model and placement. |
 | Shared expert bank | Active prefill budget; reduced to the retained bank budget during decode. |
-| Per-layer expert windows | Recent and protected decode capacity, set by the profile. |
+| Per-layer expert windows | Recent and protected decode capacity, set by the model configuration. |
 | Attention context buffers | Grow with occupied context, up to configured capacity. |
 | Indexer keys | Key-only context storage for sparse attention indexing. |
 | Recurrent state and checkpoints | Preserve model state and configured checkpoint information. |
@@ -285,7 +290,7 @@ own buffer; it does not access model tensors. It belongs to the model worker,
 starts before model loading, and stops with the worker. Initialization failure
 prevents worker startup; a later keepalive Metal error ends that activity and is
 logged. Keepalive increases idle GPU activity and power use and can be disabled
-in the model profile.
+in the model configuration.
 
 ## 9. Correctness boundaries and failures
 
@@ -302,7 +307,7 @@ The architecture relies on the following invariants:
 - One response owns the inference lease until its completion or cancellation.
 - Model resources belong to the worker, whose lifetime is bounded by the server.
 
-Unsupported profile keys, invalid cache combinations and incompatible expert
+Unsupported model configuration keys, invalid cache combinations and incompatible expert
 layouts are rejected. Worker-load failure is returned as a server error. Resource
 exhaustion or backend failure can still terminate a request or worker; the
 architecture does not promise transparent replay or recovery of a partial reply.
@@ -313,7 +318,7 @@ claim of bit-identical output across every backend and graph configuration.
 
 The runtime reports prompt-processing and generation timings, expert-cache
 activity, I/O volume and phase diagnostics. Expert diagnostics are quiet by
-default and can be enabled through the JSON profile. Logical cache hits, read
+default and can be enabled through the JSON configuration. Logical cache hits, read
 bytes, allocated memory and physical footprint answer different operational
 questions and should be interpreted separately.
 

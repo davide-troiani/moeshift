@@ -344,3 +344,7 @@ llama_test(test-indexer-keys)
 if (GGML_METAL)
     llama_build_and_test(test-metal-moe-phases.cpp LABEL backend)
 endif()
+
+llama_build(test-kv-state-compat.cpp)
+target_include_directories(test-kv-state-compat PRIVATE ${CMAKE_SOURCE_DIR}/src)
+llama_test(test-kv-state-compat ARGS ${CMAKE_CURRENT_SOURCE_DIR}/test-kv-state-compat.hex)

@@ -27,7 +27,7 @@ Tested models and quantizations are listed below.
 | Qwen3.6-35B-A3B | `qwen35moe` | UD Q6_K XL (Q6_K/Q8_0 experts) |
 
 Both use the shared SSD expert runtime on Apple Silicon. See
-[supported architectures](docs/architecture.md#supported-llm-architectures).
+[supported architectures and capabilities](docs/supported-architectures.md).
 
 ### Qwen 3.8 Flash Next
 
@@ -115,6 +115,13 @@ LES (Lookahead Expert Scheduling), expert loading and Metal execution, cache
 policy, memory management, and server/worker lifetimes.
 
 
+## Other models
+
+For other supported models, add a
+[GGUF model configuration](configs/README.md#ordinary-gguf-models) to the JSON configuration.
+See [architectures and capabilities](docs/supported-architectures.md) for the
+verification status and tools for media, speech and embeddings.
+
 ## Adjust speed and memory use
 
 You can adjust these settings in the configuration file to suit your Mac.
@@ -190,7 +197,7 @@ will be cleaned up over time. Start with this README and the
 
 MoEShift builds on [tc-mb/llama.cpp-omni](https://github.com/tc-mb/llama.cpp-omni),
 [llama.cpp](https://github.com/ggml-org/llama.cpp) and
-[ggml](https://github.com/ggml-org/ggml). The inherited MoE-SSD/LES foundations
+[ggml](https://github.com/ggml-org/ggml). The MoE-SSD/LES foundations
 precede MoEShift's Qwen runtime, Metal scheduling and cache changes. The protected
 cache adapts the demand-weighted decay idea from
 [LRFU](https://www.openu.ac.il/home/wiseman/2os/lru/lrfu.pdf).

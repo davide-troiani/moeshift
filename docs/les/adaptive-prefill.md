@@ -6,9 +6,9 @@ use this path on Apple Silicon with Metal. Inference parallelism is fixed to one
 
 ## Configuration
 
-Edit the model profile in `~/.config/moeshift/config.json`:
+Edit the model configuration in `~/.config/moeshift/config.json`:
 
-| Profile entry | Default | Effect |
+| Setting | Default | Effect |
 |---|---:|---|
 | `args.prefill-max-tokens` | `3072` | Maximum logical batch and physical microbatch size. Smaller batches reduce peak working memory. |
 | `args.moe-prefill-bank` | `512` / `256` | Shared expert slots used during prefill. A larger bank can reduce SSD reads, using more memory. |
@@ -17,7 +17,7 @@ Edit the model profile in `~/.config/moeshift/config.json`:
 
 The three `args` entries also accept CLI overrides with the corresponding
 `--` names. Runtime tuning is read from JSON, not inherited shell exports.
-Both shipped profiles use window 12, prefetch depth 3 and 24 protected
+Both shipped model configurations use window 12, prefetch depth 3 and 24 protected
 slots; see [protected decode cache](protected-decode-cache.md).
 
 ## Execution and phase transitions

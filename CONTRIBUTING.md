@@ -1,7 +1,7 @@
 # Contributing to MoEShift
 
 MoEShift is maintained by Davide Troiani. The alpha focuses on local inference
-on Macs with Apple Silicon; see the [supported LLM architectures](docs/architecture.md#supported-llm-architectures).
+on Macs with Apple Silicon; see the [supported LLM architectures](docs/supported-architectures.md).
 
 ## Issues and pull requests
 

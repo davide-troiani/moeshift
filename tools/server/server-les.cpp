@@ -10,6 +10,8 @@
 #include "common.h"
 #include "log.h"
 #include "llama.h"
+#include "gguf.h"
+#include "../../src/llama-arch.h"
 
 #include <atomic>
 #include <chrono>
@@ -57,7 +59,7 @@ int main(int argc, char ** argv) {
     if (argc < 2 || std::string(argv[1]) != "--worker") {
         if (argc > 1 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
             std::cout << "Usage: moeshift [--config FILE] [--model GGUF] [--moe-experts DIR] [--port N]\n"
-                      << "Profile options override the configuration file; inference parallelism is always 1.\n";
+                      << "Command-line settings override the JSON configuration for every model; inference parallelism is always 1.\n";
             return 0;
         }
         try {
@@ -144,33 +146,48 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
-    // LES always serves one inference at a time with the experts page cache enabled.
+    // Both ordinary and SSD profiles serve one inference at a time.
     params.n_parallel = 1;
     params.hostname = "127.0.0.1";
     setenv("LLAMA_MOE_F_NOCACHE", "0", 1);
 
     params.speculative = {};
-    if (params.moe_experts.empty() || params.les_decode_bank >= params.les_prefill_bank) {
-        std::cerr << "moeshift: adaptive expert streaming requires MoE experts and decode bank < prefill bank\n";
-        return 1;
-    }
-    // Enable growing KV buffers for LES; other clients retain the original allocator.
-    setenv("LLAMA_KV_GROW", "1", 1);
-    params.n_batch = params.n_ubatch = params.les_prefill_max_tokens;
-    params.moe_slot_bank = params.les_prefill_bank;
-    setenv("LLAMA_LES_DECODE_BANK", std::to_string(params.les_decode_bank).c_str(), 1);
-    const char * moe_quiet = std::getenv("LLAMA_MOE_QUIET");
-    if (moe_quiet && std::string(moe_quiet) != "1") {
-        std::cerr << "moeshift: adaptive: prefill-max=" << params.n_ubatch
-                  << " shared-bank=" << params.les_prefill_bank << " -> " << params.les_decode_bank << "\n";
-    }
-
+    const bool streaming_experts = !params.moe_experts.empty();
 #ifdef LLAMA_LES_METAL_KEEPALIVE
-    gpu_keepalive keepalive;
-    if (!keepalive.ready) {
-        return 1;
-    }
+    std::unique_ptr<gpu_keepalive> keepalive;
 #endif
+    if (streaming_experts) {
+        // Check metadata before applying architecture-specific runtime settings.
+        std::unique_ptr<gguf_context, decltype(&gguf_free)> metadata(
+            gguf_init_from_file(params.model.path.c_str(), {true, nullptr}), gguf_free);
+        const auto key = metadata ? gguf_find_key(metadata.get(), "general.architecture") : -1;
+        if (key < 0 || gguf_get_kv_type(metadata.get(), key) != GGUF_TYPE_STRING ||
+                !llm_arch_supports_les(llm_arch_from_string(gguf_get_val_str(metadata.get(), key)))) {
+            std::cerr << "moeshift: moe-experts requires a qwen4exp or qwen35moe GGUF model\n";
+            return 1;
+        }
+#ifndef LLAMA_LES_METAL_KEEPALIVE
+        std::cerr << "moeshift: expert streaming requires a build with Metal\n";
+        return 1;
+#endif
+        if (params.les_decode_bank >= params.les_prefill_bank) {
+            std::cerr << "moeshift: adaptive expert streaming requires decode bank < prefill bank\n";
+            return 1;
+        }
+        setenv("LLAMA_KV_GROW", "1", 1);
+        params.n_batch = params.n_ubatch = params.les_prefill_max_tokens;
+        params.moe_slot_bank = params.les_prefill_bank;
+        setenv("LLAMA_LES_DECODE_BANK", std::to_string(params.les_decode_bank).c_str(), 1);
+        const char * moe_quiet = std::getenv("LLAMA_MOE_QUIET");
+        if (moe_quiet && std::string(moe_quiet) != "1") {
+            std::cerr << "moeshift: adaptive: prefill-max=" << params.n_ubatch
+                      << " shared-bank=" << params.les_prefill_bank << " -> " << params.les_decode_bank << "\n";
+        }
+#ifdef LLAMA_LES_METAL_KEEPALIVE
+        keepalive = std::make_unique<gpu_keepalive>();
+        if (!keepalive->ready) return 1;
+#endif
+    }
 
     llama_backend_init();
     llama_numa_init(params.numa);

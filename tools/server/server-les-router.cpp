@@ -131,8 +131,10 @@ struct les_worker {
                 env[key] = value.substr(separator + 1);
             }
         }
-        for (const auto & item : profile.at("env").items()) {
-            env[item.key()] = scalar(item.value());
+        if (profile.contains("env")) {
+            for (const auto & item : profile.at("env").items()) {
+                env[item.key()] = scalar(item.value());
+            }
         }
         env["LLAMA_MOE_F_NOCACHE"] = "0";
         std::vector<std::string> environment;
@@ -222,15 +224,21 @@ void validate_config(const json & config, const std::filesystem::path & base, st
         scalar(entry.key());
         check_keys(entry.value(), {"args", "env"});
         const auto & args = entry.value().at("args");
-        const auto & env = entry.value().at("env");
+        const auto env = entry.value().value("env", json::object());
         check_keys(args, moeshift_model_options);
         check_keys(env, allowed_env);
         resolve_path(base, args.at("model"));
-        resolve_path(base, args.at("moe-experts"));
+        if (args.contains("moe-experts")) resolve_path(base, args.at("moe-experts"));
+        if (!args.contains("moe-experts")) {
+            for (const auto & key : {"moe-prefill-bank", "moe-decode-bank", "prefill-max-tokens"}) {
+                require(!args.contains(key), std::string(key) + " requires moe-experts");
+            }
+            require(env.empty(), "Expert runtime environment settings require moe-experts");
+        }
         require(args.at("alias").is_string(), "alias must be a string");
         const auto alias = scalar(args.at("alias"));
         require(alias == entry.key(), "alias must match its models key: " + entry.key());
-        require(alias.find(',') == std::string::npos, "One alias is allowed per profile");
+        require(alias.find(',') == std::string::npos, "Each model configuration accepts one alias");
         for (const auto & arg : args.items()) {
             if (arg.key() == "no-mmap") {
                 require(arg.value().is_boolean(), "no-mmap must be a boolean");

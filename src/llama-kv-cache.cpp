@@ -2039,7 +2039,9 @@ void llama_kv_cache::state_write_meta(llama_io_write_i & io, const cell_ranges_t
 
             if (has_cell_ext()) {
                 const llama_kv_cell_ext ext = cells.ext_get(i);
-                io.write(&ext, sizeof(ext));
+                if (model.arch == LLM_ARCH_QWEN4EXP) io.write(&ext.tok, sizeof(ext.tok));
+                io.write(&ext.x, sizeof(ext.x));
+                io.write(&ext.y, sizeof(ext.y));
             }
 
             for (const auto & seq_id : seq_ids) {
@@ -2176,9 +2178,11 @@ bool llama_kv_cache::state_read_meta(llama_io_read_i & io, uint32_t strm, uint32
 
             if (has_cell_ext()) {
                 llama_kv_cell_ext ext;
-                io.read(&ext, sizeof(ext));
+                if (model.arch == LLM_ARCH_QWEN4EXP) io.read(&ext.tok, sizeof(ext.tok));
+                io.read(&ext.x, sizeof(ext.x));
+                io.read(&ext.y, sizeof(ext.y));
 
-                if (has_cell_ext()) {
+                if (ubatch.is_pos_2d()) {
                     ubatch.pos[i + ubatch.n_tokens]   = ext.y;
                     ubatch.pos[i + ubatch.n_tokens*2] = ext.x;
                 }
@@ -2272,7 +2276,9 @@ bool llama_kv_cache::state_read_meta(llama_io_read_i & io, uint32_t strm, uint32
 
             if (has_cell_ext()) {
                 llama_kv_cell_ext ext;
-                io.read(&ext, sizeof(ext));
+                if (model.arch == LLM_ARCH_QWEN4EXP) io.read(&ext.tok, sizeof(ext.tok));
+                io.read(&ext.x, sizeof(ext.x));
+                io.read(&ext.y, sizeof(ext.y));
                 cells.ext_set(i, ext);
             }
 

@@ -70,6 +70,7 @@ if (BUILD_SHARED_LIBS)
 endif()
 
 if(TARGET ggml-metal)
+    target_compile_definitions(llama PRIVATE GGML_USE_METAL)
     target_include_directories(llama PRIVATE
         "${CMAKE_SOURCE_DIR}/ggml/src/ggml-metal"
     )

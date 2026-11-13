@@ -2,7 +2,7 @@
 
 Both [supported architectures](../architecture.md#supported-llm-architectures)
 use the same two-tier, demand-scored LRFU cache.
-Configure it inside the model profile's `env` object in
+Configure it inside the model configuration's `env` object in
 `~/.config/moeshift/config.json`:
 
 ```json
@@ -14,7 +14,7 @@ Configure it inside the model profile's `env` object in
 }
 ```
 
-These are profile entries, not shell exports. The router isolates workers from
+These are model configuration entries, not shell exports. The router isolates workers from
 inherited tuning variables. Positive protected slots require window 12,
 prefetch enabled and depth 3. Set protected slots to `0` to disable the
 protected tier. The CLI override is `--moe-protected-slots N`.
@@ -68,7 +68,7 @@ With the shipped prefill banks, valid values are 0–497 for Flash Next and
 | Flash Next GSQ-RCO IQ3_XXS | 48 | 83.8144 MB |
 | Qwen3.6 UD Q6_K XL | 40 | 113.8852 MB |
 
-These are expert tensor bytes (decimal), not total process memory. Each profile
+These are expert tensor bytes (decimal), not total process memory. Each model configuration
 ships with 24 protected slots. Larger caches can reduce reads but use more RAM;
 measure decode speed and memory pressure before retaining an increase.
 

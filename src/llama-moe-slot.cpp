@@ -41,7 +41,9 @@
 #endif
 #endif
 
+#ifdef GGML_USE_METAL
 #include "bridge.h"
+#endif
 
 namespace {
 // Parallel pread threads per layer wave.
@@ -631,6 +633,11 @@ install_timing start_demand(
     const std::vector<pending_install> & pending
 ) {
 
+#ifndef GGML_USE_METAL
+    GGML_UNUSED(state);
+    GGML_UNUSED(pending);
+    throw std::runtime_error("moeshift: asynchronous expert reads require Metal");
+#else
     for (const auto & binding : state.dec_bindings) {
         auto * device = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(binding.tensor->buffer));
         if (!device || std::strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(device)), "MTL") != 0)
@@ -688,6 +695,7 @@ install_timing start_demand(
     });
 
     return queued;
+#endif
 }
 
     explicit impl(const llama_model & model) :
@@ -1261,7 +1269,9 @@ install_timing start_demand(
 
     ~impl() {
         join_demand();
+#ifdef GGML_USE_METAL
         for (void * ticket : demand_tickets) les_io_destroy(ticket);
+#endif
         stop_prefill_read();
         if (cur.n_layers > 0) {
             flush_ubatch(cur.n_tokens <= 1 ? "decode" : "prefill",

@@ -1,11 +1,46 @@
 # MoEShift configuration
 
-The [standard template](moeshift.json) includes both tested model profiles:
+The [standard template](moeshift.json) includes both tested model configurations:
 
 | Model ID and alias | Prefill slots | Protected slots per layer |
 |---|---:|---:|
 | `qwen-3.8-flash-next-rco-gsq-iq3-xxs` | 512 | 24 |
 | `qwen-3.6-35b-a3b-q6-xl` | 256 | 24 |
+
+## Ordinary GGUF models
+
+To use a [supported model](../docs/supported-architectures.md) without SSD
+expert streaming, add its GGUF path and alias to the configuration:
+
+```json
+{
+  "host": "127.0.0.1",
+  "port": 8080,
+  "models": {
+    "my-model": {
+      "args": {"model": "/path/to/model.gguf", "alias": "my-model"}
+    }
+  }
+}
+```
+
+The `env` object and `moe-experts` are optional. Other generic arguments in the
+reference below remain available. Omit `moe-prefill-bank`, `moe-decode-bank`,
+`prefill-max-tokens` and expert runtime `env` settings for ordinary model configurations;
+they are rejected without `moe-experts`. Loading directly from GGUF uses the standard defaults
+unless a generic argument is explicitly configured; it does not enable adaptive
+expert banks, growing KV buffers or the GPU keepalive.
+
+Both kinds of model configurations can coexist under `models`. Existing SSD model configurations need
+no migration. Architecture comes from the GGUF, not the alias: `moe-experts`
+requires `qwen4exp` or `qwen35moe` and a matching manifest. Invalid experts cause
+an error; the server never silently switches to ordinary loading.
+Qwen models may also use ordinary loading by omitting the expert settings.
+A full Qwen model may require substantially more memory than its SSD model configuration.
+
+See [architectures and verification status](../docs/supported-architectures.md).
+The setup wizard retains its two tested SSD presets; configure other models
+manually. The following preparation steps apply only to SSD model configurations.
 
 ## Manual setup
 
@@ -41,7 +76,7 @@ The [standard template](moeshift.json) includes both tested model profiles:
    replace `model` with the full GGUF path and `moe-experts` with the full path
    to the folder containing `manifest.json`. Use actual paths in JSON:
    `~` and `$HOME` are shell shortcuts and are not expanded there.
-   Keep the existing alias and tuning values. You can remove profiles you do not use.
+   Keep the existing alias and tuning values. You can remove model configurations you do not use.
 
 4. Save the file and run `moeshift`. Use the displayed API URL and the model
    ID in your client. The first inference request loads the model.
@@ -51,22 +86,22 @@ The [standard template](moeshift.json) includes both tested model profiles:
 Lookup order: explicit `--config FILE`, `moeshift.json` in the current directory,
 `$XDG_CONFIG_HOME/moeshift/config.json`
 (or `~/.config/moeshift/config.json`). When none exists, an interactive launch opens the setup wizard.
-Profile paths resolve relative to the configuration file.
+Model file paths resolve relative to the configuration file.
 
-CLI profile overrides apply to every configured model. The JSON profile is the
+Command-line settings apply to every configured model. The JSON configuration is the
 single source of runtime tuning: shell variables starting with `LLAMA_`, `GGML_`,
 `LES_` and `MB_` are not inherited by inference workers. Parallelism is fixed to
 1; external hosts and speculative-decoding options are rejected.
 
-Both shipped LRFU profiles use a 12-slot decode window, prediction depth 3 and
+Both shipped LRFU model configurations use a 12-slot decode window, prediction depth 3 and
 24 protected slots per layer. Positive protected slots require that combination
 and enabled prefetch. The policy scores actual router demand with a 32-step
 half-life; it does not change routing top-k, expert weights or precision.
 
-| Profile setting | Default and purpose |
+| Setting | Default and purpose |
 |---|---|
 | `host`, `port` | `127.0.0.1`, `8080`; localhost only |
-| `args.model`, `args.moe-experts` | First GGUF shard and matching expert directory/manifest; required paths |
+| `args.model`, `args.moe-experts` | First GGUF shard (required); matching expert directory/manifest (optional, Qwen SSD model configurations only) |
 | `args.alias` | Model ID; must equal its key under `models` |
 | `args.ctx-size`, `args.ctx-checkpoints` | `65536` tokens; `1` checkpoint |
 | `args.threads` | `10` CPU threads |
@@ -86,9 +121,9 @@ half-life; it does not change routing top-k, expert weights or precision.
 Use the argument names as CLI overrides (`--ctx-size`, `--threads`, etc.).
 `--no-mmap true/false` overrides its JSON boolean. Cache overrides are
 `--moe-decode-window` and `--moe-protected-slots`. Other environment entries are
-set in the profile. Stop with Ctrl-C. The worker, its readers and the GPU
+set in the model configuration. Stop with Ctrl-C. The worker, its readers and the GPU
 keepalive terminate with the server, including after a forced server exit.
 
-The installed template is `share/moeshift/moeshift.json`. Guided setup writes only the selected profile. Manual setup copies both example profiles and prints the config location. File paths in the generated profile are absolute. Downloaded GGUFs and experts live under `~/.moeshift/models/<model-id>/`; local GGUFs stay in place.
+The installed template is `share/moeshift/moeshift.json`. Guided setup writes only the selected model configuration. Manual setup copies both example model configurations and prints the config location. File paths in the generated model configuration are absolute. Downloaded GGUFs and experts live under `~/.moeshift/models/<model-id>/`; local GGUFs stay in place.
 
 An invalid user configuration can be reconfigured interactively. MoEShift reports the reason and saves the original next to the replacement. For unattended startup, supply an existing configuration or pass `--config FILE`.

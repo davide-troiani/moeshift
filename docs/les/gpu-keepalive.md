@@ -8,7 +8,8 @@ This behavior has been tested only on M4 Pro.
 
 ## Configuration
 
-The model profile enables keepalive by default:
+The optimized Qwen SSD model configuration enables keepalive by default. Ordinary model
+model configurations do not start it:
 
 ```json
 "env": {

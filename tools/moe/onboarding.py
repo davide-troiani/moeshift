@@ -492,7 +492,7 @@ def wizard(config_path, repair):
             heading("✓  Configuration created")
             print(f"Configuration file: {config_path}")
             print("Manual setup guide: https://github.com/davide-troiani/moeshift/blob/main/configs/README.md")
-            print("Set model and moe-experts in your profile, save the file, then run moeshift.")
+            print("In the JSON file, find your model under models and set args.model to its GGUF path. Add args.moe-experts only for Qwen SSD streaming. Save the file, then run moeshift.")
             return False
         preset = PRESETS[selection]
         folder = Path.home() / ".moeshift/models" / preset.alias

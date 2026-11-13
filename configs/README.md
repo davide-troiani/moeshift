@@ -93,6 +93,15 @@ single source of runtime tuning: shell variables starting with `LLAMA_`, `GGML_`
 `LES_` and `MB_` are not inherited by inference workers. Parallelism is fixed to
 1; external hosts and speculative-decoding options are rejected.
 
+Set `"timeout": 1200` at the JSON root to allow up to 20 minutes of HTTP
+read/write inactivity. `--timeout 1200` overrides this value. This is not a total
+inference deadline. With `"stream": false` (the default), prompt processing and
+generation must finish within the read timeout because the worker waits for the
+complete result before responding. With `"stream": true`, the timeout applies
+before the first SSE chunk (including prompt processing) and during later pauses
+without data. A stream that keeps sending data can run longer than the timeout. Clients may have shorter timeouts
+of their own. The separate model-loading deadline remains 600 seconds.
+
 Both shipped LRFU model configurations use a 12-slot decode window, prediction depth 3 and
 24 protected slots per layer. Positive protected slots require that combination
 and enabled prefetch. The policy scores actual router demand with a 32-step
@@ -101,6 +110,7 @@ half-life; it does not change routing top-k, expert weights or precision.
 | Setting | Default and purpose |
 |---|---|
 | `host`, `port` | `127.0.0.1`, `8080`; localhost only |
+| `timeout` | `600` seconds; HTTP read/write timeout for the public server, proxy and worker. Integer in `1..2147483`. Increase it for slow prompt processing or long non-streaming responses. |
 | `args.model`, `args.moe-experts` | First GGUF shard (required); matching expert directory/manifest (optional, Qwen SSD model configurations only) |
 | `args.alias` | Model ID; must equal its key under `models` |
 | `args.ctx-size`, `args.ctx-checkpoints` | `65536` tokens; `1` checkpoint |

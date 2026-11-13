@@ -127,7 +127,7 @@ int main(int argc, char ** argv) {
     for (int i = 1; i < argc; ++i) {
         const std::string option(argv[i]);
         if (option.size() <= 2 || option.substr(0, 2) != "--" ||
-            (!moeshift_model_options.count(option.substr(2)) && option != "--host" && option != "--port")) {
+            (!moeshift_model_options.count(option.substr(2)) && option != "--host" && option != "--port" && option != "--timeout")) {
             std::cerr << "moeshift: Unsupported worker option: " << option << "\n";
             return 1;
         }

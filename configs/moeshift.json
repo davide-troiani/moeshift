@@ -1,6 +1,7 @@
 {
   "host": "127.0.0.1",
   "port": 8080,
+  "timeout": 600,
   "models": {
     "qwen-3.8-flash-next-rco-gsq-iq3-xxs": {
       "args": {

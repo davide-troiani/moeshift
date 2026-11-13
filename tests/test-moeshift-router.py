@@ -49,13 +49,17 @@ def fake_worker():
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             log("request_start")
+            time.sleep(body.get("delay", 0))
             self.send_response(200)
             if body.get("stream"):
                 self.send_header("Content-Type", "text/event-stream")
                 self.end_headers()
                 self.wfile.write(b'data: {"first":true}\n\n')
                 self.wfile.flush()
-                time.sleep(0.6)
+                for _ in range(body.get("chunks", 1)):
+                    time.sleep(body.get("chunk_delay", 0.6))
+                    self.wfile.write(b"data: {}\n\n")
+                    self.wfile.flush()
                 self.wfile.write(b"data: [DONE]\n\n")
             else:
                 self.send_header("Content-Type", "application/json")
@@ -77,7 +81,7 @@ def fake_worker():
     return 0
 
 
-class RouterTest(unittest.TestCase):
+class RouterFixture(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="les router ")
         self.addCleanup(self.temp.cleanup)
@@ -103,6 +107,8 @@ class RouterTest(unittest.TestCase):
                     value["args"].pop(key, None)
                 del value["env"]
             self.config["models"][name] = value
+        if hasattr(self, "http_timeout"):
+            self.config["timeout"] = self.http_timeout
         self.path = self.root / "server.json"
         self.path.write_text(json.dumps(self.config))
         self.log = open(self.root / "router.log", "w+")
@@ -153,6 +159,8 @@ class RouterTest(unittest.TestCase):
         self.assertEqual(status, 200, body)
         return body
 
+
+class RouterTest(RouterFixture):
     def test_runtime_environment_cannot_override_profile(self):
         worker = self.infer("a")
         for key in ("LLAMA_LES_DECODE_BANK", "LLAMA_KV_GROW", "LLAMA_GRAPH_REUSE_DISABLE",
@@ -179,7 +187,7 @@ class RouterTest(unittest.TestCase):
         del self.config["models"]["b"]
         self.path.write_text(json.dumps(self.config))
         self.proc = subprocess.Popen(
-            [BINARY, "--config", str(self.path), "--ctx-size", "8192",
+            [BINARY, "--config", str(self.path), "--ctx-size", "8192", "--timeout", "1200",
              "--moe-protected-slots", "23", "--moe-decode-window", "12"],
             env=dict(os.environ, MOESHIFT_ROUTER_TEST_LOG=str(self.events)),
             stdout=self.log, stderr=self.log)
@@ -193,6 +201,7 @@ class RouterTest(unittest.TestCase):
             time.sleep(0.05)
         response = self.infer("a")
         self.assertEqual(response["args"]["--ctx-size"], "8192")
+        self.assertEqual(response["args"]["--timeout"], "1200")
         self.assertEqual(response["env"]["LLAMA_MOE_PROTECTED_SLOTS"], "23")
 
     def test_routing_environment_reuse_failure_recovery_and_cleanup(self):
@@ -288,6 +297,20 @@ class RouterTest(unittest.TestCase):
         result = subprocess.run([BINARY, "--config", str(self.path)], capture_output=True, timeout=5)
         self.assertIn(b"require moe-experts", result.stderr)
 
+    def test_timeout_validation(self):
+        self.stop()
+        for value in (0, -1, True, "1200", 1.5, 2147484, 2**64 - 1, None):
+            with self.subTest(timeout=value):
+                self.config["timeout"] = value
+                self.path.write_text(json.dumps(self.config))
+                result = subprocess.run([BINARY, "--config", str(self.path)],
+                                        capture_output=True, timeout=5)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(b"timeout must be an integer", result.stderr)
+
+    def test_default_timeout_forwarded(self):
+        self.assertEqual(self.infer("a")["args"]["--timeout"], "600")
+
     def test_worker_rejects_experts_for_other_architecture(self):
         # A metadata-only GGUF needs no model download or Python GGUF dependencies.
         model = self.root / "llama.gguf"
@@ -345,6 +368,68 @@ class RouterTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertTrue(result.stdout.startswith(b"MoEShift "))
         self.assertEqual(result.stderr, b"")
+
+
+class TimeoutTest(RouterFixture):
+    http_timeout = 1
+
+    def test_silent_response_times_out(self):
+        for name in ("a", "b"):
+            with self.subTest(model=name):
+                self.infer(name)
+                conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+                try:
+                    start = time.monotonic()
+                    conn.request("POST", "/v1/chat/completions",
+                                 json.dumps({"model": name, "delay": 2}),
+                                 {"Content-Type": "application/json"})
+                    response = conn.getresponse()
+                    self.assertEqual(response.status, 500)
+                    self.assertIn(b"proxy error:", response.read())
+                    self.assertLess(time.monotonic() - start, 2)
+                finally:
+                    conn.close()
+
+    def test_stalled_stream_times_out(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            conn.request("POST", "/v1/chat/completions",
+                         json.dumps({"model": "a", "stream": True, "chunk_delay": 2}),
+                         {"Content-Type": "application/json"})
+            response = conn.getresponse()
+            self.assertEqual(response.status, 200)
+            data = response.read()
+            self.assertIn(b'"first":true', data)
+            self.assertIn(b"proxy error:", data)
+            self.assertNotIn(b"[DONE]", data)
+        finally:
+            conn.close()
+
+    def test_active_stream_outlives_timeout(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            start = time.monotonic()
+            conn.request("POST", "/v1/chat/completions",
+                         json.dumps({"model": "a", "stream": True, "chunks": 4, "chunk_delay": 0.4}),
+                         {"Content-Type": "application/json"})
+            response = conn.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertIn(b"data: [DONE]", response.read())
+            self.assertGreater(time.monotonic() - start, 1)
+        finally:
+            conn.close()
+
+
+class LongerTimeoutTest(RouterFixture):
+    http_timeout = 3
+
+    def test_silent_response_succeeds_with_longer_timeout(self):
+        for name in ("a", "b"):
+            with self.subTest(model=name):
+                status, body = self.request("POST", "/v1/chat/completions",
+                                            {"model": name, "delay": 2})
+                self.assertEqual(status, 200, body)
+                self.assertEqual(body["args"]["--timeout"], "3")
 
 
 if __name__ == "__main__":

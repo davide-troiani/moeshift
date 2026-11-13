@@ -1,5 +1,4 @@
 // VoxCPM2 TTS standalone HTTP server
-// Adapted from server-omni.cpp pattern
 
 #include "voxcpm2_runtime.h"
 #include "llama.h"

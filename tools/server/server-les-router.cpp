@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #endif
@@ -99,7 +100,7 @@ struct les_worker {
     ~les_worker() { stop(); }
 
     void load(const std::string & binary, const std::string & name, const json & profile,
-              const std::filesystem::path & base, const std::function<bool()> & cancelled) {
+              const std::filesystem::path & base, int timeout, const std::function<bool()> & cancelled) {
         if (running() && model == name) {
             return;
         }
@@ -119,7 +120,7 @@ struct les_worker {
                         ? resolve_path(base, item.value()) : scalar(item.value()));
             }
         }
-        args.insert(args.end(), {"--host", "127.0.0.1", "--port", std::to_string(port)});
+        args.insert(args.end(), {"--host", "127.0.0.1", "--port", std::to_string(port), "--timeout", std::to_string(timeout)});
 
         // Environment belongs to the profile; shell-level tuning must not leak into it.
         std::map<std::string, std::string> env;
@@ -173,8 +174,8 @@ void apply_overrides(json & config, int argc, char ** argv) {
     for (int i = 0; i < argc; i += 2) {
         require(i + 1 < argc, "Expected a value for " + std::string(argv[i]));
         const std::string key(argv[i]);
-        if (key == "--port") {
-            config["port"] = json::parse(argv[i + 1]);
+        if (key == "--port" || key == "--timeout") {
+            config[key.substr(2)] = json::parse(argv[i + 1]);
             continue;
         }
         const std::map<std::string, std::string> env_options{
@@ -192,7 +193,7 @@ void apply_overrides(json & config, int argc, char ** argv) {
 
 void validate_config(const json & config, const std::filesystem::path & base, std::string & binary,
                      common_params & params, std::set<std::string> & aliases) {
-    check_keys(config, {"binary", "host", "port", "models"});
+    check_keys(config, {"binary", "host", "port", "timeout", "models"});
     if (config.contains("binary")) binary = resolve_path(base, config.at("binary"));
     else {
 #ifdef __APPLE__
@@ -213,7 +214,11 @@ void validate_config(const json & config, const std::filesystem::path & base, st
     require(config.at("port").is_number_integer(), "port must be an integer");
     require(config.at("port") > 0 && config.at("port") <= 65535, "port must be in 1..65535");
     params.port = config.at("port").get<int>();
-    params.timeout_read = params.timeout_write = 600;
+    // httplib converts seconds to signed int milliseconds for poll().
+    const auto timeout = config.value("timeout", json(600));
+    require(timeout.is_number_integer() && timeout > 0 && timeout <= std::numeric_limits<int>::max() / 1000,
+            "timeout must be an integer in 1..2147483 seconds");
+    params.timeout_read = params.timeout_write = timeout.get<int>();
     const auto & models = config.at("models");
     require(models.is_object() && !models.empty(), "models must be a nonempty object");
     const std::set<std::string> allowed_env{
@@ -332,9 +337,9 @@ int run_les_router(const char * config_path, const volatile std::sig_atomic_t & 
             });
             lock.unlock();
             try {
-                worker.load(binary, name, models.at(name), base, cancelled);
+                worker.load(binary, name, models.at(name), base, params.timeout_read, cancelled);
                 auto proxy = std::make_unique<server_http_proxy>("POST", "http", "127.0.0.1", worker.port,
-                        req.path, req.headers, req.body, req.files, cancelled, 600, 600);
+                        req.path, req.headers, req.body, req.files, cancelled, params.timeout_read, params.timeout_write);
                 proxy->next = [next = std::move(proxy->next), lease](std::string & output) { return next(output); };
                 return proxy;
             } catch (const std::exception & e) {

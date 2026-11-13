@@ -96,7 +96,7 @@ class RouterFixture(unittest.TestCase):
         self.port = free_port()
         example = json.loads((Path(__file__).resolve().parents[1] / "configs/moeshift.json").read_text())
         profile = example["models"]["qwen-3.8-flash-next-rco-gsq-iq3-xxs"]
-        self.config = {"binary": str(worker), "host": "127.0.0.1", "port": self.port, "models": {}}
+        self.config = {"check-updates": False, "binary": str(worker), "host": "127.0.0.1", "port": self.port, "models": {}}
         for name, ctx in (("a", 2048), ("b", 4096), ("fail", 2048)):
             value = json.loads(json.dumps(profile))
             value["args"].update({"alias": name, "model": f"{name}.gguf", "ctx-size": ctx})
@@ -354,6 +354,20 @@ class RouterTest(RouterFixture):
                 self.assertEqual(result.returncode, 1)
                 self.assertIn(key.encode(), result.stderr)
                 del profile[key]
+
+
+    def test_update_option_validation(self):
+        self.config["check-updates"] = "false"
+        self.path.write_text(json.dumps(self.config))
+        result = subprocess.run([BINARY, "--config", str(self.path)], capture_output=True, timeout=5)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b"check-updates must be a boolean", result.stderr)
+
+    def test_version_without_config(self):
+        result = subprocess.run([BINARY, "--version"], cwd=self.root, capture_output=True, timeout=5)
+        self.assertEqual(result.returncode, 0)
+        self.assertTrue(result.stdout.startswith(b"MoEShift "))
+        self.assertEqual(result.stderr, b"")
 
 
 class TimeoutTest(RouterFixture):

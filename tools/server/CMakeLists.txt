@@ -56,7 +56,21 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/ui.h"
     "#pragma once\n"
 )
 
+# Source archives carry the release version; untagged/dirty checkouts are development builds.
+file(STRINGS "${CMAKE_SOURCE_DIR}/moeshift-version.txt" MOESHIFT_VERSION LIMIT_COUNT 1)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/moeshift-version.txt")
+if (EXISTS "${CMAKE_SOURCE_DIR}/.git")
+    execute_process(COMMAND git describe --tags --exact-match HEAD
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" OUTPUT_VARIABLE MOESHIFT_TAG OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    execute_process(COMMAND git diff --quiet HEAD WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" RESULT_VARIABLE MOESHIFT_DIRTY)
+    if (NOT MOESHIFT_TAG STREQUAL "v${MOESHIFT_VERSION}" OR NOT MOESHIFT_DIRTY EQUAL 0)
+        string(APPEND MOESHIFT_VERSION "-dev")
+    endif()
+endif()
+configure_file(moeshift-version.h.in moeshift-version.h @ONLY)
+
 add_executable(moeshift
+    server-update.cpp
     server-les.cpp
     server-les-router.cpp
     server-models.cpp

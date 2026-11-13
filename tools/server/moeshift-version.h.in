@@ -1,0 +1,4 @@
+#pragma once
+#ifndef MOESHIFT_VERSION
+#define MOESHIFT_VERSION "@MOESHIFT_VERSION@"
+#endif

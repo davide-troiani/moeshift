@@ -78,3 +78,41 @@ spatial x=7/y=11, sequence 0) and F32 K/V rows. It was accepted and reproduced
 byte-for-byte by upstream `96bbf61`; the regression test covers whole-context
 and single-sequence restores and the existing Qwen4Exp extended layout.
 
+
+## Application version and release checks
+
+`moeshift --version` prints the application version from `moeshift-version.txt`.
+This filename deliberately avoids shadowing the C++ `<version>` header on macOS.
+Source archives use that version directly. Git checkouts whose HEAD is not exactly
+`v<version>` or have tracked modifications append `-dev` and skip update checks.
+Reconfigure CMake after changing tags or checkout state. Existing upstream build
+numbers remain independent of the MoEShift application version.
+
+For a release, update `moeshift-version.txt`, commit it with the release changes,
+create the matching `v<version>` tag and build from that clean tagged checkout.
+Verify `moeshift --version` before packaging. Mark alpha/beta GitHub Releases as
+prereleases and official versions as full releases. Only published MoEShift Releases
+are queried; inherited local Git tags are never used to choose an update.
+
+The build example above disables HTTPS. To enable live release checks, configure
+with `-DLLAMA_OPENSSL=ON` using the existing OpenSSL support (no new dependency is
+introduced). Without HTTPS the server still starts and serves requests normally.
+
+Release checks run in the public server's background task and can be disabled with
+`"check-updates": false` at the JSON root (default: `true`, boolean only). Official
+versions accept only newer official releases; betas accept newer betas and official
+releases; alphas accept all three. Installing a more stable version narrows the channel.
+Drafts and other prerelease suffixes are ignored. Notices on stderr link to the release;
+Homebrew availability must be checked separately.
+
+Attempts are cached for 24 hours in `$XDG_CACHE_HOME/moeshift/releases.json` or
+`~/Library/Caches/moeshift/releases.json`. GitHub receives the public request and the
+application version, but no model or configuration data. Network failures do not stop
+the server. HTTP requests share a five-second budget; system DNS can take longer.
+
+Focused notification checks:
+
+```sh
+cmake --build build --target test-moeshift-update
+ctest --test-dir build -R '^test-moeshift-update$' --output-on-failure
+```

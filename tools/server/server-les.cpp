@@ -5,6 +5,7 @@
 #include "server-context.h"
 #include "server-http.h"
 #include "server-les-router.h"
+#include "moeshift-version.h"
 
 #include "arg.h"
 #include "common.h"
@@ -57,8 +58,12 @@ int main(int argc, char ** argv) {
     std::signal(SIGTERM, handle_signal);
 
     if (argc < 2 || std::string(argv[1]) != "--worker") {
+        if (argc == 2 && std::string(argv[1]) == "--version") {
+            std::cout << "MoEShift " << MOESHIFT_VERSION << '\n';
+            return 0;
+        }
         if (argc > 1 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
-            std::cout << "Usage: moeshift [--config FILE] [--model GGUF] [--moe-experts DIR] [--port N]\n"
+            std::cout << "Usage: moeshift [--version] [--config FILE] [--model GGUF] [--moe-experts DIR] [--port N]\n"
                       << "Command-line settings override the JSON configuration for every model; inference parallelism is always 1.\n";
             return 0;
         }

@@ -1,4 +1,6 @@
 #include "server-les-router.h"
+#include "server-update.h"
+#include "moeshift-version.h"
 #include "server-models.h"
 
 #include <cpp-httplib/httplib.h>
@@ -192,7 +194,8 @@ void apply_overrides(json & config, int argc, char ** argv) {
 
 void validate_config(const json & config, const std::filesystem::path & base, std::string & binary,
                      common_params & params, std::set<std::string> & aliases) {
-    check_keys(config, {"binary", "host", "port", "models"});
+    check_keys(config, {"binary", "host", "port", "models", "check-updates"});
+    require(!config.contains("check-updates") || config.at("check-updates").is_boolean(), "check-updates must be a boolean");
     if (config.contains("binary")) binary = resolve_path(base, config.at("binary"));
     else {
 #ifdef __APPLE__
@@ -345,6 +348,7 @@ int run_les_router(const char * config_path, const volatile std::sig_atomic_t & 
         http.post("/v1/completions", infer);
         require(http.start(), "HTTP startup failed");
         http.is_ready.store(true);
+        std::cerr << "moeshift: version " << MOESHIFT_VERSION << '\n';
         if (isatty(STDERR_FILENO)) {
             const char * term = std::getenv("TERM");
             const bool color = !std::getenv("NO_COLOR") && (!term || std::strcmp(term, "dumb") != 0);
@@ -358,6 +362,7 @@ int run_les_router(const char * config_path, const volatile std::sig_atomic_t & 
             for (const auto & alias : aliases) std::cerr << " " << alias;
             std::cerr << "\n";
         }
+        moeshift_update::checker updates(config.value("check-updates", true));
         while (!stop_requested) { std::this_thread::sleep_for(100ms); }
         http.stop();
         {

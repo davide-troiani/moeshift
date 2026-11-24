@@ -18,7 +18,7 @@ They can also load directly from GGUF, which may require much more memory.
 | Model / architecture | Tested quantization | Verification |
 |---|---|---|
 | Qwen 3.8 Flash Next — `qwen4exp` | GSQ-RCO IQ3_XXS | Short and long prompts tested; regression comparison produced identical replies |
-| Inkling 2 Mini — `inkling2_loop` | Unsloth UD-Q4_K_XL | Short and long prompts tested with shared loop decode windows and prepared experts on Apple Silicon. See the [Inkling configuration](../configs/inkling-2-mini.json). |
+| Inkling 2 Mini — `inkling2_loop` | Unsloth UD-Q4_K_XL | Available in the setup wizard. Short and long prompts tested with shared loop decode windows and prepared experts on Apple Silicon. See the [Inkling configuration](../configs/inkling-2-mini.json). |
 | Qwen3.6-35B-A3B — `qwen35moe` | UD Q6_K XL | Q6_K XL inference tested; cache and expert-operation tests pass; latest model regression comparison pending |
 
 See the [model benchmarks](../README.md#tested-models-and-benchmarks) for measured

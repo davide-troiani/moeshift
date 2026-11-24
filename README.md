@@ -23,6 +23,7 @@ You need an Apple Silicon Mac with at least **10 GB of RAM**, a fast SSD and
 | Model in the setup wizard | Free SSD space needed |
 |---|---:|
 | Qwen 3.8 Flash Next (125B) | 120 GB |
+| Inkling 2 Mini (26B) | 34 GB |
 | Qwen3.6-35B-A3B (35B) | 61 GB |
 
 Disk space includes both the downloaded model and the files MoEShift prepares for streaming.
@@ -43,6 +44,7 @@ Configure your coding agent or API client with the OpenAI-compatible base URL
 | Model | Model ID |
 |---|---|
 | Flash Next (125B) | `qwen-3.8-flash-next-rco-gsq-iq3-xxs` |
+| Inkling 2 Mini (26B) | `inkling-2-mini` |
 | Qwen3.6 (35B) | `qwen-3.6-35b-a3b-q6-xl` |
 
 ## Tested models and benchmarks
@@ -89,7 +91,7 @@ System swap stayed at **0 MB** throughout the run.
 To adjust memory use or conversation length, edit the JSON configuration and
 restart MoEShift. [Configuration reference](configs/README.md)
 
-The two presets above support SSD streaming. Other GGUF models load directly
+All three wizard presets support SSD streaming. Other GGUF models load directly
 and have different memory requirements. [Supported models](docs/supported-architectures.md) ·
 [Architecture](docs/architecture.md)
 
@@ -113,9 +115,10 @@ MoEShift builds on [tc-mb/llama.cpp-omni](https://github.com/tc-mb/llama.cpp-omn
 [llama.cpp](https://github.com/ggml-org/llama.cpp) and
 [ggml](https://github.com/ggml-org/ggml).
 
-The setup wizard uses Qwen model files published by
+The setup wizard uses model files published by
 [ISTA-DASLab](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF)
-and [Unsloth](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF).
+and Unsloth ([Qwen3.6](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF),
+[Inkling 2 Mini](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF)).
 
 Original Git history and copyright notices are retained. See [LICENSE](LICENSE)
 and the bundled third-party licenses. Model weights retain their own licenses.

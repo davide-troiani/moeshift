@@ -77,6 +77,7 @@ constexpr int32_t kSlotPending = -2;
 // 1 wave is worth +3.65% prefill (261.9 -> 271.2 t/s), at zero memory cost.
 // Kept as a named constant (rather than deleting the loop) so the cap stays explicit.
 constexpr int kMoeSsdIoChunk = 256;
+constexpr int kMoeSsdMaxIov = 32;
 
 static int64_t now_ns() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -517,6 +518,11 @@ struct llama_moe_slot_runtime::impl {
         std::string dec_pack_path;
         std::vector<binding> dec_bindings;
         std::vector<size_t> dec_pack_order;
+        int32_t decode_owner = -1;
+        int32_t decode_visits = 1;
+        std::vector<uint8_t> decode_pins;
+        std::vector<int32_t> loop_peers;
+        std::atomic<bool> demand_ready{true};
 
         /// 预读成功发布进本窗口的次数（诊断用；与 n_hits 的区别是后者统计的是
         /// 主路径命中，这里统计 worker 的产出）。
@@ -619,10 +625,12 @@ struct llama_moe_slot_runtime::impl {
     uint64_t last_pf_pub = 0;
 
     std::vector<void *> demand_tickets;
+    int decode_aliases = 0;
 std::vector<std::thread> demand_threads;
 
 int demand_next_layer = -1;
 std::vector<int32_t> demand_next;
+std::atomic<uint64_t> loop_cached_bytes{0};
 
 void join_demand() {
     for (auto & thread : demand_threads) if (thread.joinable()) thread.join();
@@ -648,6 +656,7 @@ install_timing start_demand(
         demand_tickets.resize(layers.size(), nullptr);
         demand_threads.resize(layers.size());
         for (size_t il = 0; il < layers.size(); ++il) {
+            if (layers[il].dec_bindings.empty()) continue;
             demand_tickets[il] = les_io_create();
             for (auto & binding : layers[il].dec_bindings)
                 les_io_register(demand_tickets[il], binding.tensor->data);
@@ -667,6 +676,9 @@ install_timing start_demand(
         1, std::min(moe_ssd_io_threads(), queued.n)
     );
 
+    if (!state.loop_peers.empty()) {
+        state.demand_ready.store(false, std::memory_order_relaxed);
+    }
     demand_thread = std::thread([
         this, &state, pending, epoch, demand_ticket,
         next_layer = demand_next_layer,
@@ -681,6 +693,9 @@ install_timing start_demand(
                 std::memory_order_relaxed
             );
 
+            if (!state.loop_peers.empty()) {
+                state.demand_ready.store(true, std::memory_order_release);
+            }
             les_io_signal(demand_ticket, epoch);
 
             if (!next.empty())
@@ -699,16 +714,17 @@ install_timing start_demand(
 }
 
     explicit impl(const llama_model & model) :
+        predicted(model.moe_slot_layers().size()),
+        miss_per_layer(model.moe_slot_layers().size(), 0),
         model(model),
         n_expert((int32_t) model.hparams.n_expert),
         n_slots(model.moe_slot_bank_size()),
-        layers(model.layers.size()),
-        predicted(model.layers.size()),
-        miss_per_layer(model.layers.size(), 0),
-        userdata(model.layers.size()) {
-        for (size_t il = 0; il < model.layers.size(); ++il) {
+        layers(model.moe_slot_layers().size()),
+        userdata(layers.size()) {
+        const auto & slot_layers = model.moe_slot_layers();
+        for (size_t il = 0; il < slot_layers.size(); ++il) {
             auto & state = layers[il];
-            const auto & layer = model.layers[il];
+            const auto & layer = slot_layers[il];
             // Appended prediction blocks are not executed by the main model.
             if (model.arch == LLM_ARCH_QWEN35MOE &&
                 il >= model.hparams.n_layer - model.hparams.nextn_predict_layers) {
@@ -803,12 +819,13 @@ install_timing start_demand(
             // 见 qwen35moe.cpp 与 install_prefetch_into_window 的分区说明。
             int n_dec = 0;
             std::string fail;
-            for (size_t il = 0; il < model.layers.size() && fail.empty(); ++il) {
+            std::unordered_map<ggml_tensor *, size_t> owners;
+            for (size_t il = 0; il < slot_layers.size() && fail.empty(); ++il) {
                 auto & state = layers[il];
                 if (!state.enabled) {
                     continue;
                 }
-                const auto & layer = model.layers[il];
+                const auto & layer = slot_layers[il];
                 const std::pair<ggml_tensor *, const char *> fam[4] = {
                     { layer.ffn_gate_up_exps_dec, "gate_up" },
                     { layer.ffn_gate_exps_dec,    "gate"    },
@@ -821,7 +838,7 @@ install_timing start_demand(
                     }
                     try {
                         const int32_t expect = (llm_arch_supports_les(model.arch) &&
-                            !std::getenv("LLAMA_QWEN_SEPARATE_PREFILL_BANKS"))
+                            (model.arch == LLM_ARCH_INKLING2_LOOP || !std::getenv("LLAMA_QWEN_SEPARATE_PREFILL_BANKS")))
                             ? int32_t(fam[k].first->ne[2])
                             : (layer_width[il] > 0 ? layer_width[il] : decode_window + prefetch_slots);
                         GGML_ASSERT(expect >= layer_width[il] && expect <= n_slots);
@@ -841,6 +858,27 @@ install_timing start_demand(
                     fail = format("layer %zu has no decode tensors", il);
                 }
                 if (fail.empty()) {
+                    if (model.arch == LLM_ARCH_INKLING2_LOOP) {
+                        const auto result = owners.emplace(state.dec_bindings.front().tensor, il);
+                        if (!result.second) {
+                            const int32_t owner = result.first->second;
+                            auto & shared = layers[owner];
+                            GGML_ASSERT(model.moe_physical_layer(il) == model.moe_physical_layer(owner));
+                            GGML_ASSERT(state.dec_bindings.size() == shared.dec_bindings.size());
+                            for (size_t k = 0; k < state.dec_bindings.size(); ++k) {
+                                GGML_ASSERT(state.dec_bindings[k].tensor == shared.dec_bindings[k].tensor);
+                                GGML_ASSERT(state.dec_bindings[k].entry == shared.dec_bindings[k].entry);
+                            }
+                            GGML_ASSERT(shared.protected_cache.enabled());
+                            state.decode_owner = owner;
+                            state.dec_bindings.clear();
+                            shared.decode_pins.assign(n_expert, 0);
+                            const int recent = std::min(15 * ++shared.decode_visits, shared.window_width - 1);
+                            shared.protected_cache.configure(recent, shared.window_width, n_expert);
+                            ++decode_aliases;
+                            continue;
+                        }
+                    }
                     finalize_pack(state.dec_bindings, state.dec_pack_order, state.dec_pack_ok,
                                   state.dec_pack_base, state.dec_pack_stride, state.dec_pack_path);
                     if (llm_arch_supports_les(model.arch) && std::getenv("LLAMA_LES_DECODE_BANK") &&
@@ -865,10 +903,37 @@ install_timing start_demand(
                 moe_log("decode-cache: %d 层绑定 decode 张量（每层 %d = cache %d + prefetch %d slot，pack %s）",
                         n_dec, (int) (decode_window + prefetch_slots), (int) decode_window,
                         (int) prefetch_slots, layers[0].dec_pack_ok ? "ok" : "off");
+                if (decode_aliases) {
+                    moe_log("loop-cache: %d decode windows for %d visits", n_dec, n_dec + decode_aliases);
+                }
+            }
+        }
+        if (decode_window > 0 && model.arch == LLM_ARCH_INKLING2_LOOP &&
+                std::getenv("LLAMA_LES_DECODE_BANK") && !decode_aliases) {
+            for (int32_t il = 0; il < (int32_t) layers.size(); ++il) {
+                auto & state = layers[il];
+                for (int32_t other = 0; other < (int32_t) layers.size(); ++other) {
+                    if (other == il || model.moe_physical_layer(other) != model.moe_physical_layer(il)) {
+                        continue;
+                    }
+                    const auto & peer = layers[other];
+                    GGML_ASSERT(state.dec_bindings.size() == peer.dec_bindings.size());
+                    for (size_t k = 0; k < state.dec_bindings.size(); ++k) {
+                        GGML_ASSERT(state.dec_bindings[k].entry == peer.dec_bindings[k].entry);
+                    }
+                    if (!state.dec_bindings.empty()) {
+                        state.loop_peers.push_back(other);
+                    }
+                }
             }
         }
         sweep_init();
         prewarm_init();
+    }
+
+    layer_state & decode_state(int layer) {
+        const int32_t owner = layers[layer].decode_owner;
+        return layers[owner >= 0 ? owner : layer];
     }
 
     /// 预读专用：把一个 expert 读进**目标层自己的窗口**（按窗口 LRU 挑 slot）。
@@ -891,6 +956,7 @@ install_timing start_demand(
         }
         // expert_to_slot 不能整体清：pending 的专家此时还没登记，所以直接全清是安全的。
         std::fill(st.expert_to_slot.begin(), st.expert_to_slot.end(), kSlotFree);
+        std::fill(st.decode_pins.begin(), st.decode_pins.end(), 0);
         st.protected_cache.reset(st.slot_to_expert);
     }
 
@@ -930,7 +996,7 @@ install_timing start_demand(
 
         int32_t slot = -1;
         if (st.protected_cache.enabled() && !cache_only) {
-            slot = st.protected_cache.miss(st.slot_to_expert, st.slot_age, {}, {});
+            slot = st.protected_cache.miss(st.slot_to_expert, st.slot_age, st.decode_pins, {});
             if (slot < 0) return -1;
         }
         for (int32_t cand = from; slot < 0 && cand < hi; ++cand) {
@@ -981,7 +1047,7 @@ install_timing start_demand(
         if (layer < 0 || layer >= (int) layers.size() || decode_window <= 0 || prefetch_slots <= 0) {
             return;
         }
-        auto & st = layers[(size_t) layer];
+        auto & st = decode_state(layer);
         if (!st.enabled || expert < 0 || expert >= n_expert) {
             return;
         }
@@ -1298,6 +1364,10 @@ install_timing start_demand(
                     (unsigned long long) miss_per_layer_steps, s.c_str());
         }
         lookahead.stop();
+        const uint64_t copied = loop_cached_bytes.load(std::memory_order_relaxed);
+        if (copied > 0) {
+            moe_log("loop-cache: copied %.1f MiB between visits", mib_of(copied));
+        }
         log_io("final");
         report_merge();
         if (sweep_fp) {
@@ -1443,7 +1513,8 @@ install_timing start_demand(
     }
 
     // read one contiguous file span into several disjoint buffers, adjusting the iovecs on partial reads
-    void readv_span(int fd, size_t offset, struct iovec * iov, int niov) {
+    void readv_span(int fd, size_t offset, const struct iovec * iov, int niov) {
+        GGML_ASSERT(niov > 0 && niov <= kMoeSsdMaxIov);
         {
             size_t n = 0;
             for (int i = 0; i < niov; ++i) {
@@ -1460,7 +1531,7 @@ install_timing start_demand(
         }
         size_t done = 0;
         while (done < total) {
-            struct iovec cur[8];
+            struct iovec cur[kMoeSsdMaxIov];
             int cn = 0;
             size_t skip = done;
             for (int i = 0; i < niov; ++i) {
@@ -1493,11 +1564,36 @@ install_timing start_demand(
         }
     }
 
-    // Reads the packed gate|up|down span (one contiguous run in the experts) with a single preadv,
-    // writing each family straight into its own slot. One syscall, one write per byte: no staging
-    // buffer and no second copy into the device buffer.
-    int64_t read_expert_directv(const layer_state & state, int32_t expert, int32_t slot,
-                                bool window_mode = false) {
+    bool copy_from_loop_cache(const layer_state & state, const pending_install & item) {
+        for (int32_t il : state.loop_peers) {
+            auto & peer = layers[il];
+            std::unique_lock<std::mutex> lock(peer.mutex, std::try_to_lock);
+            if (!lock || !peer.demand_ready.load(std::memory_order_acquire)) {
+                continue;
+            }
+            const int32_t slot = peer.expert_to_slot[item.expert];
+            if (slot < 0 || slot >= peer.window_width) {
+                continue;
+            }
+            GGML_ASSERT(peer.slot_to_expert[slot] == item.expert);
+            size_t bytes = 0;
+            for (size_t k = 0; k < state.dec_bindings.size(); ++k) {
+                const auto & target = state.dec_bindings[k];
+                const auto & source = peer.dec_bindings[k];
+                const size_t n = target.entry->bytes_per_expert;
+                std::memcpy((uint8_t *) target.tensor->data + item.slot*n,
+                            (const uint8_t *) source.tensor->data + slot*n, n);
+                bytes += n;
+            }
+            loop_cached_bytes.fetch_add(bytes, std::memory_order_relaxed);
+            return true;
+        }
+        return false;
+    }
+
+    // Reads contiguous packed experts with one preadv, writing each family directly into its slot.
+    int64_t read_experts_directv(const layer_state & state, const pending_install * items, int count,
+                                 bool window_mode) {
         // 诊断：LLAMA_MOE_SKIP_READ=1 时走完所有记账但不真读盘。
         //
         // 目的是把「CPU 段 + 每层往返」的成本和「真读盘」的成本分开：
@@ -1517,6 +1613,9 @@ install_timing start_demand(
             if (s && *s && *s != '0') return 2;
             return 0;
         }();
+        if (mode == 0 && window_mode && count == 1 && copy_from_loop_cache(state, items[0])) {
+            return 0;
+        }
 
         // decode 阶段读进**本层自己的窗口张量**（base 上的 view），prefill 读进共享那段。
         // 两套的张量、文件偏移、步长都不同，所以整组一起切。
@@ -1526,43 +1625,39 @@ install_timing start_demand(
         const size_t base   = window_mode ? state.dec_pack_base   : state.pack_base;
         const size_t stride = window_mode ? state.dec_pack_stride : state.pack_stride;
 
-        struct iovec iov[8];
+        struct iovec iov[kMoeSsdMaxIov];
         const int n = (int) order.size();
         if (n <= 0 || n > 8) {
             throw std::runtime_error("invalid MoE packed family count for preadv");
         }
-        size_t nbytes = 0;
-        size_t max_exp = 0;
-        for (int i = 0; i < n; ++i) {
-            max_exp = std::max(max_exp, bindings[order[(size_t) i]].entry->bytes_per_expert);
-        }
+        GGML_ASSERT(count > 0 && count <= kMoeSsdMaxIov / n);
+        thread_local std::vector<uint8_t> scratch;
         if (mode == 1) {
-            // dummy：读进一块常驻 scratch（不碰 GPU 缓冲区）。同样是真读盘，
-            // 所以 I/O 量与正常模式一致，差别只有「数据落到哪里」。
-            static std::vector<uint8_t> scratch;
+            size_t max_exp = 0;
+            for (const auto & b : bindings) {
+                max_exp = std::max(max_exp, b.entry->bytes_per_expert);
+            }
             if (scratch.size() < max_exp) {
                 scratch.resize(max_exp);
             }
+        }
+        size_t nbytes = 0;
+        int n_iov = 0;
+        for (int item = 0; item < count; ++item) {
             for (int i = 0; i < n; ++i) {
                 const binding & b = bindings[order[(size_t) i]];
-                iov[i].iov_base = scratch.data();
-                iov[i].iov_len  = b.entry->bytes_per_expert;
-                nbytes += b.entry->bytes_per_expert;
-            }
-        } else {
-            for (int i = 0; i < n; ++i) {
-                const binding & b = bindings[order[(size_t) i]];
-                iov[i].iov_base = (uint8_t *) b.tensor->data + (size_t) slot * b.entry->bytes_per_expert;
-                iov[i].iov_len  = b.entry->bytes_per_expert;
-                nbytes += b.entry->bytes_per_expert;
+                const size_t bytes = b.entry->bytes_per_expert;
+                auto * dst = (uint8_t *) b.tensor->data + (size_t) items[item].slot * bytes;
+                iov[n_iov++] = { mode == 1 ? scratch.data() : dst, bytes };
+                nbytes += bytes;
             }
         }
         const int fd = fd_for(path);
-        const size_t offset = base + (size_t) expert * stride;
+        const size_t offset = base + (size_t) items[0].expert * stride;
 
         if (mode == 2) {
             // 记账照做（让上层以为读成功了），但不落盘 —— 用于隔离 I/O 与结构开销。
-            stats.n_miss.fetch_add(1, std::memory_order_relaxed);
+            stats.n_miss.fetch_add(count, std::memory_order_relaxed);
             return 0;
         }
 
@@ -1578,12 +1673,17 @@ install_timing start_demand(
         }
 
         const int64_t t0 = now_ns();
-        readv_span(fd, offset, iov, n);
+        readv_span(fd, offset, iov, n_iov);
         const int64_t dt = now_ns() - t0;
         stats.pread_ns.fetch_add(dt, std::memory_order_relaxed);
         stats.n_bytes.fetch_add(nbytes, std::memory_order_relaxed);
-        stats.n_miss.fetch_add(1, std::memory_order_relaxed);
+        stats.n_miss.fetch_add(count, std::memory_order_relaxed);
         return dt;
+    }
+
+    int64_t read_expert_directv(const layer_state & state, int32_t expert, int32_t slot, bool window_mode = false) {
+        const pending_install item{expert, slot};
+        return read_experts_directv(state, &item, 1, window_mode);
     }
 
     static const uint8_t * host_data(const ggml_tensor * tensor) {
@@ -1725,7 +1825,8 @@ install_timing start_demand(
 
     bool prefill_pipeline_enabled(int n_rows) const {
 #if defined(__APPLE__) && TARGET_OS_OSX
-        if (!llm_arch_supports_les(model.arch) || n_rows < 1024) {
+        const int min_rows = model.arch == LLM_ARCH_INKLING2_LOOP ? 512 : 1024;
+        if (!llm_arch_supports_les(model.arch) || n_rows < min_rows) {
             return false;
         }
         const char * value = std::getenv("LLAMA_MOE_PREFILL_PIPELINE");
@@ -1784,11 +1885,13 @@ install_timing start_demand(
         });
     }
 
-    install_timing install_prefill_pipeline(int layer, const std::vector<pending_install> & pending) {
+    install_timing install_prefill_pipeline(int layer, const std::vector<pending_install> & pending, bool read_next) {
         const auto & state = layers[layer];
         const int64_t start = now_ns();
         if (prefill_layer != layer) {
-            stop_prefill_read();
+            if (prefill_reader.joinable()) {
+                stop_prefill_read();
+            }
             start_prefill_read(layer);
         }
         prefill_reader.join();
@@ -1813,9 +1916,10 @@ install_timing start_demand(
         stats.pread_ns.fetch_add(prefill_read_ns, std::memory_order_relaxed);
         stats.n_miss.fetch_add(pending.size(), std::memory_order_relaxed);
         prefill_layer = -1;
-        if (layer + 1 < (int) layers.size() && layers[layer + 1].enabled) {
+        const bool has_next = layer + 1 < (int) layers.size() && layers[layer + 1].enabled;
+        if (read_next && has_next) {
             start_prefill_read(layer + 1);
-        } else {
+        } else if (!has_next) {
             stop_prefill_read();
         }
         t.wall_ns = now_ns() - start;
@@ -1845,7 +1949,7 @@ install_timing start_demand(
         return total;
     }
 
-    install_timing install_packed_wave(layer_state & state, const std::vector<pending_install> & pending,
+    install_timing install_packed_wave(layer_state & state, std::vector<pending_install> & pending,
                                        bool window_mode) {
         install_timing t;
         const int n = (int) pending.size();
@@ -1856,18 +1960,46 @@ install_timing start_demand(
         t.n = n;
         t.pack = true;
         t.bytes = (size_t) n * state.pack_bytes;
-        std::vector<std::string> errs((size_t) n);
-        std::vector<int64_t> dts((size_t) n, 0);
+        std::vector<std::pair<int, int>> spans;
+#if defined(__APPLE__) && TARGET_OS_OSX
+        if (!window_mode && model.arch == LLM_ARCH_INKLING2_LOOP && n > 1) {
+            size_t end = state.pack_base;
+            for (size_t index : state.pack_order) {
+                const auto & entry = *state.bindings[index].entry;
+                if (entry.offset != end) {
+                    break;
+                }
+                end += entry.bytes_per_expert;
+            }
+            if (end - state.pack_base == state.pack_stride) {
+                std::sort(pending.begin(), pending.end(), [](const pending_install & a, const pending_install & b) {
+                    return a.expert < b.expert;
+                });
+                const int max_experts = kMoeSsdMaxIov / state.pack_order.size();
+                for (int first = 0, next = 0; first < n; first = next) {
+                    next = first + 1;
+                    while (next < n && next - first < max_experts &&
+                            pending[next].expert == pending[next - 1].expert + 1) {
+                        ++next;
+                    }
+                    spans.emplace_back(first, next - first);
+                }
+            }
+        }
+#endif
+        const int n_reads = spans.empty() ? n : (int) spans.size();
+        std::vector<std::string> errs((size_t) n_reads);
+        std::vector<int64_t> dts((size_t) n_reads, 0);
         auto read_one = [&](int i) {
             try {
-                dts[(size_t) i] = read_expert_directv(
-                    state, pending[(size_t) i].expert, pending[(size_t) i].slot, window_mode);
+                const auto span = spans.empty() ? std::make_pair(i, 1) : spans[i];
+                dts[i] = read_experts_directv(state, &pending[span.first], span.second, window_mode);
             } catch (const std::exception & e) {
                 errs[(size_t) i] = e.what();
             }
         };
 
-        t.n_th = std::max(1, std::min(moe_ssd_io_threads(), n));
+        t.n_th = std::max(1, std::min(moe_ssd_io_threads(), n_reads));
         const int64_t wall0 = now_ns();
         // 注意：单线程不能只调 read_one(0) —— 那只会装第一个专家，
         // 其余 N-1 个被静默跳过，slot 里留着上一层/上一个 token 的旧权重，
@@ -1877,7 +2009,7 @@ install_timing start_demand(
         // expert-major（offset = base + expert * stride），所以单线程等于**严格
         // 顺序读文件**，可能接近顺序读速率（实测比 4 线程的随机交织快）。
         if (t.n_th == 1) {
-            for (int i = 0; i < n; ++i) {
+            for (int i = 0; i < n_reads; ++i) {
                 read_one(i);
             }
         } else {
@@ -1888,7 +2020,7 @@ install_timing start_demand(
                 threads.emplace_back([&]() {
                     for (;;) {
                         const int i = next.fetch_add(1, std::memory_order_relaxed);
-                        if (i >= n) {
+                        if (i >= n_reads) {
                             break;
                         }
                         read_one(i);
@@ -1900,7 +2032,7 @@ install_timing start_demand(
             }
         }
         t.wall_ns = now_ns() - wall0;
-        for (int i = 0; i < n; ++i) {
+        for (int i = 0; i < n_reads; ++i) {
             if (!errs[(size_t) i].empty()) {
                 throw std::runtime_error(errs[(size_t) i]);
             }
@@ -2188,8 +2320,19 @@ install_timing start_demand(
                 }
                 p = end;
             }
-            prewarm_table[(size_t) li] = std::move(ids);
-            total += (int) prewarm_table[(size_t) li].size();
+            const int32_t owner = layers[li].decode_owner;
+            if (owner >= 0) {
+                auto & group = prewarm_table[owner];
+                for (int32_t e : ids) {
+                    if (std::find(group.begin(), group.end(), e) == group.end()) {
+                        group.push_back(e);
+                        total++;
+                    }
+                }
+            } else {
+                total += (int) ids.size();
+                prewarm_table[li] = std::move(ids);
+            }
             li++;
         }
         std::fclose(fp);
@@ -2443,14 +2586,19 @@ void llama_moe_slot_runtime::set_adaptive_phase(bool decode) {
         size_t extra_bytes = 0;
         int protected_layers = 0;
         int protected_slots = 0;
+        int widest = 0;
         for (const auto & state : pimpl->layers) {
             if (!state.protected_cache.enabled()) continue;
             ++protected_layers;
             protected_slots = state.window_width - state.protected_cache.recent_limit;
+            widest = std::max(widest, state.window_width);
             for (const auto & binding : state.dec_bindings)
                 extra_bytes += size_t(protected_slots) * binding.entry->bytes_per_expert;
         }
-        if (protected_layers) moe_log("protected-cache: layers=%d recent=15 protected=%d total=%d policy=demand-lrfu half_life=32 extra_bytes=%zu (%.4f MB/slot across layers)",
+        if (pimpl->decode_aliases) {
+            moe_log("protected-cache: windows=%d max_total=%d policy=demand-lrfu half_life=32 visits extra_bytes=%zu",
+                protected_layers, widest, extra_bytes);
+        } else if (protected_layers) moe_log("protected-cache: layers=%d recent=15 protected=%d total=%d policy=demand-lrfu half_life=32 extra_bytes=%zu (%.4f MB/slot across layers)",
             protected_layers, protected_slots, 15 + protected_slots,
             extra_bytes, extra_bytes / (double) protected_slots / 1e6);
     }
@@ -2528,8 +2676,6 @@ void llama_moe_slot_runtime::process(
             slot_ids ? (long long) slot_ids->ne[1] : -1));
     }
 
-    auto & state = pimpl->layers[layer];
-
     const int32_t n_rows = (int32_t) expert_ids->ne[1];
 
     const bool pipelined_prefill = pimpl->prefill_pipeline_enabled(n_rows);
@@ -2539,6 +2685,7 @@ void llama_moe_slot_runtime::process(
     const bool decode = n_rows == 1;
     // Per-layer windows are used only for single-token decoding.
     const bool window_mode = pimpl->decode_window > 0 && n_rows <= pimpl->window_max_rows;
+    auto & state = window_mode ? pimpl->decode_state(layer) : pimpl->layers[layer];
     const bool lookahead_step = pimpl->lookahead.enabled && window_mode;
     // Prefill overwrites the same storage: finish all previous prefetch reads first.
     if (!window_mode && pimpl->was_window) pimpl->lookahead.drain();
@@ -2598,11 +2745,11 @@ void llama_moe_slot_runtime::process(
         // 此刻 layer 0 的锁已被本函数持有，两个函数对当前层都不再加锁。
         if (pimpl->prewarm_ready) {
             const size_t n_before = pimpl->prewarm_placed.size();
-            pimpl->publish_prewarm_placed(layer);
+            pimpl->publish_prewarm_placed(int(&state - pimpl->layers.data()));
             pimpl->prewarm_ready = false;   // 一次性：本轮已消费
             moe_log("prewarm: 重挂 %zu 个已预热专家（无 I/O，数据活过 prefill）", n_before);
         } else {
-            pimpl->prewarm_windows(layer);
+            pimpl->prewarm_windows(int(&state - pimpl->layers.data()));
         }
     }
     // 阶段判据必须是 `window_mode` 而不是 `decode`：投机验证（批宽 = n_max+1）与
@@ -2640,6 +2787,10 @@ void llama_moe_slot_runtime::process(
             throw std::runtime_error("MoE expert id is out of range");
         }
         requested[experts[i]] = 1;
+    }
+    if (window_mode && !state.decode_pins.empty()) {
+        // A late prefetch can target another visit to the window in use by the GPU.
+        state.decode_pins = requested;
     }
 
     if (pimpl->lookahead.enabled && !window_mode) {
@@ -2808,11 +2959,13 @@ void llama_moe_slot_runtime::process(
         std::vector<int32_t> need_read;
         need_read.reserve(pred.size());
         {
-            auto & tgt = pimpl->layers[(size_t) layer + 1];
-            std::lock_guard<std::mutex> lk(tgt.mutex);
-            for (int32_t e : pred) {
-                if (e >= 0 && e < pimpl->n_expert && tgt.expert_to_slot[(size_t) e] < 0) {
-                    need_read.push_back(e);
+            auto & tgt = pimpl->decode_state(layer + 1);
+            if (&tgt != &state) {
+                std::lock_guard<std::mutex> lk(tgt.mutex);
+                for (int32_t e : pred) {
+                    if (e >= 0 && e < pimpl->n_expert && tgt.expert_to_slot[(size_t) e] < 0) {
+                        need_read.push_back(e);
+                    }
                 }
             }
         }
@@ -2836,12 +2989,19 @@ void llama_moe_slot_runtime::process(
         }
     }
 
+    // Sparse prompts can reach a large batch size without routing to most experts.
+    const bool dense_prefill = pimpl->model.arch != LLM_ARCH_INKLING2_LOOP ||
+        pending.size()*4 >= (size_t) pimpl->n_expert*3;
+    const bool read_pack = pipelined_prefill && (dense_prefill || pimpl->prefill_layer == layer);
     const llama_moe_slot_runtime::impl::install_timing timing =
         (window_mode && !pending.empty())
         ? pimpl->start_demand(state, pending)
-        : pipelined_prefill
-            ? pimpl->install_prefill_pipeline(layer, pending)
+        : read_pack
+            ? pimpl->install_prefill_pipeline(layer, pending, dense_prefill)
             : pimpl->install_pending(state, pending, window_mode);
+    if (!read_pack && pimpl->prefill_data && layer + 1 == (int) pimpl->layers.size()) {
+        pimpl->stop_prefill_read();
+    }
     pimpl->install_ns.fetch_add(timing.wall_ns, std::memory_order_relaxed);
 
     if (!pending.empty()) {

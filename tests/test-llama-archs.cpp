@@ -109,6 +109,11 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
         n_ff   = 192;
     } else if (arch == LLM_ARCH_NEMOTRON_H || arch == LLM_ARCH_NEMOTRON_H_MOE) {
         n_layer = 3;
+    } else if (arch == LLM_ARCH_INKLING2_LOOP) {
+        n_embd = 128;
+        n_head = 4;
+        n_ff = 64;
+        n_layer = 6;
     } else if (arch == LLM_ARCH_CHAMELEON) {
         n_vocab = 10240;
     }
@@ -232,6 +237,29 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
     ms.add_kv(LLM_KV_WKV_HEAD_SIZE,             n_embd/n_head);
     ms.add_kv(LLM_KV_SHORTCONV_L_CACHE,         uint32_t(3));
 
+    if (arch == LLM_ARCH_INKLING2_LOOP) {
+        const uint8_t swa[] = {1, 0, 1, 0, 1, 0};
+        gguf_set_arr_data(ret.get(), LLM_KV(arch)(LLM_KV_ATTENTION_SLIDING_WINDOW_PATTERN).c_str(),
+                GGUF_TYPE_BOOL, swa, n_layer);
+        ms.add_kv(LLM_KV_ATTENTION_MAX_ALIBI_BIAS,       0.0f);
+        ms.add_kv(LLM_KV_ATTENTION_QK_CLIP,              22.0f);
+        ms.add_kv(LLM_KV_ATTENTION_RELATIVE_LENGTH,     uint32_t(4));
+        ms.add_kv(LLM_KV_ATTENTION_RELATIVE_EXTENT,     uint32_t(16));
+        ms.add_kv(LLM_KV_ATTENTION_RELATIVE_CLIP,       8.0f);
+        ms.add_kv(LLM_KV_ATTENTION_LOG_SCALE_FLOOR,     uint32_t(16));
+        ms.add_kv(LLM_KV_ATTENTION_LOG_SCALE_ALPHA,     0.1f);
+        ms.add_kv(LLM_KV_ATTN_RES_BLOCK_SIZE,           uint32_t(2));
+        ms.add_kv(LLM_KV_ACTIVATION_SITU_BETA,          4.0f);
+        ms.add_kv(LLM_KV_ACTIVATION_SITU_LINEAR_BETA,   25.0f);
+        ms.add_kv(LLM_KV_EXPERT_WEIGHTS_SCALE,          8.0f);
+        ms.add_kv(LLM_KV_FINAL_LOGIT_SOFTCAPPING,       30.0f);
+        ms.add_kv(LLM_KV_VOCAB_SIZE_UNPADDED,           n_vocab);
+        ms.add_kv(LLM_KV_LOOP_START,                   uint32_t(2));
+        ms.add_kv(LLM_KV_LOOP_END,                     uint32_t(4));
+        ms.add_kv(LLM_KV_LOOP_COUNT,                   uint32_t(3));
+        ms.add_kv(LLM_KV_LOOP_GATE_RANK,               uint32_t(8));
+    }
+
     for (uint32_t il = 0; il < n_layer; il++) {
         ggml_tensor t;
         memset(&t, 0, sizeof(ggml_tensor));
@@ -354,6 +382,7 @@ static bool moe_mandatory(const llm_arch arch) {
         case LLM_ARCH_RND1:
         case LLM_ARCH_PADDLEOCR:
         case LLM_ARCH_MIMO2:
+        case LLM_ARCH_INKLING2_LOOP:
         case LLM_ARCH_KIMI_LINEAR:
         case LLM_ARCH_STEP35:
         case LLM_ARCH_MISTRAL4:

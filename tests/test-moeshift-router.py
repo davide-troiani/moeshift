@@ -323,14 +323,14 @@ class RouterTest(RouterFixture):
                                  "--moe-experts", str(self.root / "experts")],
                                 capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 1)
-        self.assertIn(b"moe-experts requires a qwen4exp or qwen35moe", result.stderr)
+        self.assertIn(b"moe-experts requires a qwen4exp, qwen35moe or inkling2_loop", result.stderr)
         result = subprocess.run([BINARY, "--worker", "--model", str(model)],
                                 capture_output=True, timeout=10)
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn(b"adaptive expert streaming requires", result.stderr)
         self.assertNotIn(b"keepalive:", result.stderr)
         self.assertIn(b"Model loading failed", result.stderr)
-        for arch in ("qwen4exp", "qwen35moe"):
+        for arch in ("qwen4exp", "qwen35moe", "inkling2_loop"):
             model.write_bytes(struct.pack("<4sIQQ", b"GGUF", 3, 0, 1) +
                              string("general.architecture") + struct.pack("<I", 8) + string(arch))
             result = subprocess.run([BINARY, "--worker", "--model", str(model),
@@ -338,7 +338,7 @@ class RouterTest(RouterFixture):
                                     env=dict(os.environ, LLAMA_GPU_KEEPALIVE="0"),
                                     capture_output=True, timeout=10)
             self.assertNotEqual(result.returncode, 0)
-            self.assertNotIn(b"moe-experts requires a qwen4exp or qwen35moe", result.stderr)
+            self.assertNotIn(b"moe-experts requires a qwen4exp, qwen35moe or inkling2_loop", result.stderr)
             self.assertTrue(b"manifest" in result.stderr or b"requires a build with Metal" in result.stderr,
                             result.stderr)
 

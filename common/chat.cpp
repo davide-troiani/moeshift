@@ -2263,6 +2263,89 @@ static json common_chat_extra_context() {
     return ctx;
 }
 
+static common_chat_params common_chat_params_init_inkling2(
+        const common_chat_template & tmpl, autoparser::generation_params inputs) {
+    const std::string header = "<|message_model|>";
+    const std::string think  = "<|content_thinking|>";
+    const std::string text   = "<|content_text|>";
+    const std::string invoke = "<|content_invoke_tool_json|>";
+    const std::string end    = "<|end_message|>";
+
+    if (!inputs.enable_thinking && !inputs.extra_context.contains("reasoning_effort")) {
+        inputs.extra_context["reasoning_effort"] = "none";
+    }
+
+    common_chat_params data;
+    data.prompt = common_chat_template_direct_apply_impl(tmpl, inputs);
+    data.generation_prompt = common_chat_template_generation_prompt_impl(tmpl, inputs);
+    data.format = COMMON_CHAT_FORMAT_PEG_NATIVE;
+    data.supports_thinking = true;
+    data.thinking_start_tag = think;
+    data.thinking_end_tag = end;
+    data.preserved_tokens = { header, think, text, invoke, end };
+    data.message_spans = common_chat_split_by_role(data.prompt, {
+        {"assistant", header}, {"user", "<|message_user|>"},
+        {"system", "<|message_system|>"}, {"tool", "<|message_tool|>"},
+    });
+
+    if (inputs.has_continuation()) {
+        const auto & msg = inputs.continue_msg;
+        if (!msg.reasoning_content.empty()) {
+            data.generation_prompt = header + think + msg.reasoning_content;
+        }
+        if (inputs.continue_final_message == COMMON_CHAT_CONTINUATION_CONTENT) {
+            if (!data.generation_prompt.empty()) {
+                data.generation_prompt += end;
+            }
+            data.generation_prompt += header + text + msg.render_content();
+        }
+        data.prompt += data.generation_prompt;
+    }
+
+    const bool json_response = inputs.json_schema.is_object();
+    const bool use_tools = inputs.tools.is_array() && !inputs.tools.empty() && inputs.tool_choice != COMMON_CHAT_TOOL_CHOICE_NONE;
+    const bool require_tool = use_tools && inputs.tool_choice == COMMON_CHAT_TOOL_CHOICE_REQUIRED;
+    auto parser = build_chat_peg_parser([&](common_chat_peg_builder & p) {
+        auto reasoning = inputs.reasoning_format == COMMON_REASONING_FORMAT_NONE
+            ? p.content(p.literal(think) + p.until(end) + p.literal(end))
+            : p.literal(think) + p.reasoning(p.until(end)) + p.literal(end);
+        if (json_response) {
+            auto response = p.content(p.schema(p.json(), "response-format", inputs.json_schema));
+            return p.zero_or_more(p.literal(header) + reasoning) + p.literal(header + text) + response + end + p.end();
+        }
+        auto content = p.literal(text) + p.content(p.until(end)) + p.literal(end);
+        auto blocks = p.zero_or_more(p.literal(header) + (reasoning | content));
+        if (!use_tools) {
+            return blocks + p.end();
+        }
+
+        auto calls = p.choice();
+        size_t index = 0;
+        foreach_function(inputs.tools, [&](const json & tool) {
+            const auto & fn = tool.at("function");
+            const std::string name = fn.at("name");
+            const std::string quoted = json(name).dump();
+            auto tool_name = p.literal("\"") + p.tool_name(p.literal(quoted.substr(1, quoted.size() - 2))) + "\"";
+            auto tool_args = p.tool_args(p.schema(p.json(), "inkling-args-" + std::to_string(index), fn.at("parameters")));
+            auto body = p.tool_open(p.literal("{")) << p.json_member("name", tool_name) << p.literal(",")
+                << p.json_member("args", tool_args) << p.tool_close(p.literal("}"));
+            calls |= p.rule("inkling-call-" + std::to_string(index),
+                    p.tool(p.optional(p.literal(name)) + p.literal(invoke) + body + end));
+            ++index;
+        });
+        auto call = p.literal(header) + calls;
+        auto tools = inputs.parallel_tool_calls ? p.one_or_more(call) : call;
+        return blocks + (require_tool ? tools : p.optional(tools)) + p.end();
+    });
+    data.parser = parser.save();
+    if (json_response || require_tool) {
+        data.grammar = build_grammar([&](const common_grammar_builder & builder) {
+            parser.build_grammar(builder, false);
+        });
+    }
+    return data;
+}
+
 std::optional<common_chat_params> common_chat_try_specialized_template(
         const common_chat_template &          tmpl,
         const std::string &                   src,
@@ -2273,6 +2356,11 @@ std::optional<common_chat_params> common_chat_try_specialized_template(
         src.find("[ARGS]") != std::string::npos && src.find("[CALL_ID]") == std::string::npos) {
         LOG_DBG("Using specialized template: Ministral/Magistral Large 3\n");
         return common_chat_params_init_ministral_3(tmpl, params);
+    }
+
+    if (src.find("<|content_model_end_sampling|>") != std::string::npos &&
+        src.find("<|message_model|>") != std::string::npos) {
+        return common_chat_params_init_inkling2(tmpl, params);
     }
 
     // GPT-OSS - has unique channel-based structure that needs dedicated handler

@@ -12,6 +12,26 @@ enum {
     GGML_MOE_SLOT_MARKER_PARAM = 15,
     GGML_MOE_SLOT_MARKER = 0x4c4553,
 };
+enum {
+    GGML_INKLING_FUSION_PARAM = 15,
+    GGML_INKLING_CLIP        = 0x49434c,
+    GGML_INKLING_SITU        = 0x495354,
+};
+
+struct ggml_metal_kargs_inkling_clip {
+    int width;
+    int scaled;
+    float threshold;
+    float eps;
+};
+
+struct ggml_metal_kargs_inkling_situ {
+    int count;
+    float inv_beta;
+    float beta;
+    float inv_linear_beta;
+    float linear_beta;
+};
 
 // kernel parameters for mat-mat threadgroups
 //
@@ -56,6 +76,9 @@ enum {
 
 #define N_R0_MXFP4 2
 #define N_SG_MXFP4 2
+
+#define N_R0_NVFP4 4
+#define N_SG_NVFP4 8
 
 #define N_R0_Q2_K 4
 #define N_SG_Q2_K 2
@@ -118,8 +141,13 @@ enum {
 #define FC_GATED_DELTA_NET             1600
 
 // op-specific constants
+#define OP_FLASH_ATTN_EXT_MIN_TILED_Q 20
 #define OP_FLASH_ATTN_EXT_NQPSG 8
 #define OP_FLASH_ATTN_EXT_NCPSG 64
+
+// Optional sources of the tiled Metal Flash Attention kernel.
+#define GGML_METAL_FA_REL_TABLE 5
+#define GGML_METAL_FA_REL_POS   6
 
 #define OP_FLASH_ATTN_EXT_VEC_NQPSG 1
 #define OP_FLASH_ATTN_EXT_VEC_NCPSG 32
@@ -407,6 +435,7 @@ typedef struct {
     float    m1;
     int32_t  n_head_log2;
     float    logit_softcap;
+    int32_t  n_relative;
 } ggml_metal_kargs_flash_attn_ext;
 
 typedef struct {

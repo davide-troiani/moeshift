@@ -705,6 +705,8 @@ struct llama_model {
     int32_t moe_prefetch_slots() const;
     /// experts 里的 MoE 层数（用于算 base 容量）。
     int32_t moe_experts_layer_count() const;
+    int moe_physical_layer(int il) const;
+    const std::vector<llama_layer> & moe_slot_layers() const;
 
     const llama_moe_experts_entry * moe_experts_entry(const char * tensor_name) const;
 
@@ -755,6 +757,7 @@ struct llama_model_base : public llama_model {
     virtual ~llama_model_base() = default;
 
     ggml_tensor * create_tensor(llama_model_loader & ml, const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags);
+    int weight_layer_slot(int bid) const;
 
     // convenience overload of create_tensor that doesn't require llama_model_loader
     ggml_tensor * create_tensor(const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags);

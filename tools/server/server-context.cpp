@@ -701,6 +701,7 @@ private:
     // set to llama_model_n_swa(model)
     // if swa_full is enabled, this is set to 0 to simulate a non-SWA model
     int32_t n_swa;
+    bool inkling_expert_streaming = false;
 
     // slots / clients
     std::vector<server_slot> slots;
@@ -910,6 +911,11 @@ private:
             SRV_ERR("failed to load model, '%s'\n", params_base.model.path.c_str());
             return false;
         }
+
+        char architecture[32];
+        inkling_expert_streaming = !params_base.moe_experts.empty() &&
+            llama_model_meta_val_str(model_tgt, "general.architecture", architecture, sizeof(architecture)) > 0 &&
+            std::string(architecture) == "inkling2_loop";
 
         vocab = llama_model_get_vocab(model_tgt);
 
@@ -3102,8 +3108,13 @@ private:
                             ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS ||
                             n_swa > 0);
 
+                    // Every split can reread the same experts in all 48 visits.
+                    if (inkling_expert_streaming && !slot.task->params.cache_prompt) {
+                        do_checkpoint = false;
+                    }
+
                     const int32_t n_before_user = slot.task->params.n_before_user;
-                    const bool n_before_user_known = n_before_user > 0;
+                    const bool n_before_user_known = n_before_user > 0 && (!inkling_expert_streaming || do_checkpoint);
 
                     bool has_mtmd = false;
 

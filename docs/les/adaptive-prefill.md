@@ -1,7 +1,7 @@
 # Adaptive prefill
 
 MoEShift uses different expert-memory budgets for reading a prompt (prefill)
-and generating a reply (decode). Both [supported architectures](../architecture.md#supported-llm-architectures)
+and generating a reply (decode). The [supported SSD architectures](../architecture.md#supported-llm-architectures)
 use this path on Apple Silicon with Metal. Inference parallelism is fixed to one.
 
 ## Configuration
@@ -12,25 +12,38 @@ Edit the model configuration in `~/.config/moeshift/config.json`:
 |---|---:|---|
 | `args.prefill-max-tokens` | `3072` | Maximum logical batch and physical microbatch size. Smaller batches reduce peak working memory. |
 | `args.moe-prefill-bank` | `512` / `256` | Shared expert slots used during prefill. A larger bank can reduce SSD reads, using more memory. |
-| `args.moe-decode-bank` | `0` | Shared expert slots retained during decode; must be smaller than the prefill bank. Per-layer decode windows remain allocated separately. |
+| `args.moe-decode-bank` | `0` | Shared expert slots retained during decode; must be smaller than the prefill bank. Decode windows have a separate allocation. |
 | `env.LLAMA_MOE_PREFILL_PIPELINE` | `1` | Overlap prefill expert reads with computation. |
 
 The three `args` entries also accept CLI overrides with the corresponding
 `--` names. Runtime tuning is read from JSON, not inherited shell exports.
-Both shipped model configurations use window 12, prefetch depth 3 and 24 protected
-slots; see [protected decode cache](protected-decode-cache.md).
+The SSD presets use window 12 and prefetch depth 3, with 24 protected slots
+for Qwen and 6 for Inkling. See [protected decode cache](protected-decode-cache.md).
 
 ## Execution and phase transitions
 
 The server fills each batch with available prompt tokens up to the configured
-limit. Context checkpoints can split it further. The shared bank is reused across
-layers: 512 slots cover Flash Next's 512 experts;
-256 cover Qwen3.6's 256 experts.
+limit. When checkpoints are enabled, Inkling adds checkpoint boundaries to
+requests that use prompt caching. The shared prefill bank covers 512 experts
+for Flash Next, 256 for Qwen3.6, and 128 for Inkling 2 Mini.
+
+Inkling groups adjacent experts from the packed file into a single vectored
+read, writing each one straight into its slot. With the prefill pipeline
+enabled, batches of at least 512 tokens start staging a full layer when at
+least 75% of its experts are needed. A dense layer also starts the next read
+while Metal computes. Sparse routing uses the bounded reads when there is no
+staged read for the current layer. The Qwen profiles use full-layer reads
+starting at 1,024 tokens.
+
+The tiled Metal Flash Attention kernel looks up Inkling's relative bias from
+the projected table as it consumes each causal or sliding-window mask tile.
+The [Inkling preset](../../configs/inkling-2-mini.json) uses a 3,072-token batch
+limit to reuse each expert read across prompt tokens.
 
 Before switching phases, the runtime synchronizes GPU work and drains expert
 readers. It invalidates cached mappings and sets the active Metal buffer ranges
 for the new phase. During decode, the unused shared-bank ranges are released;
-the per-layer decode windows and protected cache remain available. Virtual
+the decode windows and protected cache stay active. Virtual
 addresses stay reserved while discarded host pages become reusable by macOS.
 The next prefill restores the shared-bank ranges before using them.
 
@@ -38,6 +51,11 @@ Expert execution uses the common Metal phase identifiers in
 `ggml/src/ggml-metal/ggml-metal-impl.h`: `ALL` (0), `RESIDENT` (1), and
 `MISSING` (2). The resident/missing path requires Metal placement. Predictions
 schedule reads; the actual router determines which experts are computed.
+
+In Inkling's single-token SSD decode, Metal fuses the L2 clipping of the
+attention queries, keys and relative-position queries. It also fuses SiTU
+within each expert phase, so the existing readiness dependency still gates
+the missing experts. Unsupported tensor layouts use the ordinary operations.
 
 Set `env.LLAMA_MOE_QUIET` to `0` for diagnostics such as `adaptive-batch`,
 `adaptive phase=prefill/decode`, `phase-scratch`, and `protected-cache`.

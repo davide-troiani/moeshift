@@ -1632,6 +1632,90 @@ struct llama_model_openai_moe : public llama_model_base {
 };
 
 
+struct llama_model_inkling2_loop : public llama_model_base {
+    using llama_model_base::llama_model_base;
+
+    void load_arch_hparams(llama_model_loader & ml) override;
+    void load_arch_tensors(llama_model_loader & ml) override;
+    std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
+
+    int physical_layer(int il) const;
+    int first_slot(int ip) const;
+    uint32_t n_phys = 0;
+    std::vector<llama_layer> slot_layers;
+
+private:
+    enum { LOOP_CTRL_Q, LOOP_CTRL_K, LOOP_CTRL_V, LOOP_CTRL_FFN, LOOP_CTRL_COUNT };
+
+    struct loop_layer {
+        ggml_tensor * msg_query = nullptr;
+        ggml_tensor * ctrl_down[LOOP_CTRL_COUNT] = {};
+        ggml_tensor * ctrl_gain[LOOP_CTRL_COUNT] = {};
+        ggml_tensor * ctrl_forget[LOOP_CTRL_COUNT] = {};
+    };
+
+    struct layer_weights {
+        ggml_tensor * attn_rel         = nullptr;
+        ggml_tensor * attn_rel_bias    = nullptr;
+        ggml_tensor * attn_q_clip      = nullptr;
+        ggml_tensor * attn_rel_clip    = nullptr;
+        ggml_tensor * attn_sink_proj   = nullptr;
+        ggml_tensor * attn_q_inp_norm  = nullptr;
+        ggml_tensor * attn_k_inp_norm  = nullptr;
+        ggml_tensor * attn_v_inp_norm  = nullptr;
+        ggml_tensor * attn_k_conv      = nullptr;
+        ggml_tensor * attn_v_conv      = nullptr;
+        ggml_tensor * attn_k_conv_proj = nullptr;
+        ggml_tensor * attn_v_conv_proj = nullptr;
+        ggml_tensor * attn_post_conv   = nullptr;
+        ggml_tensor * attn_res_query   = nullptr;
+        ggml_tensor * ffn_post_conv    = nullptr;
+        ggml_tensor * ffn_res_query    = nullptr;
+    };
+
+    uint32_t core_start = 0;
+    uint32_t core_end = 0;
+    uint32_t n_passes = 0;
+    uint32_t gate_rank = 0;
+    uint32_t block_size = 0;
+    uint32_t n_relative = 0;
+    uint32_t relative_extent = 0;
+    uint32_t log_scale_floor = 0;
+    uint32_t n_vocab_padded = 0;
+    uint32_t n_vocab_unpadded = 0;
+    float log_scale_alpha = 0.0f;
+    float qk_clip = 0.0f;
+    float relative_clip = 0.0f;
+
+    std::array<uint32_t, LLAMA_MAX_LAYERS> expert_ff{};
+    std::vector<layer_weights> weights;
+    std::vector<loop_layer> loop_layers;
+    ggml_tensor * output_res_query = nullptr;
+
+    struct graph : public llm_graph_context {
+        graph(const llama_model_inkling2_loop & inkling, const llm_graph_params & params);
+        const llama_model_inkling2_loop & inkling;
+
+        ggml_tensor * clip(ggml_tensor * cur, ggml_tensor * scale, float threshold);
+        ggml_tensor * norm_residual(ggml_tensor * cur);
+        ggml_tensor * residual_states(ggml_tensor * blocks, ggml_tensor * cur);
+        ggml_tensor * mix(ggml_tensor * states, ggml_tensor * query, ggml_tensor * transposed = nullptr);
+        ggml_tensor * control(ggml_tensor * cur, ggml_tensor * message, const loop_layer & loop, int ctrl);
+        ggml_tensor * convolve(ggml_tensor * cur, ggml_tensor * weight, ggml_tensor * dynamic,
+                ggml_tensor * state, ggml_tensor * history, int64_t offset);
+        ggml_tensor * build_inputs();
+        ggml_tensor * build_layer(int il, int ip, ggml_tensor * cur, ggml_tensor * & blocks,
+                ggml_tensor * messages = nullptr, const loop_layer * loop = nullptr);
+        void build_output(ggml_tensor * cur, ggml_tensor * blocks);
+
+        llm_graph_input_attn_kv_iswa * attn = nullptr;
+        llm_graph_input_rs * recr = nullptr;
+        ggml_tensor * rel_pos[2] = {};
+        ggml_tensor * inp_out_ids = nullptr;
+        ggml_tensor * tau = nullptr;
+    };
+};
+
 struct llama_model_falcon_h1 : public llama_model_base {
     llama_model_falcon_h1(const struct llama_model_params & params) : llama_model_base(params) {}
     void load_arch_hparams(llama_model_loader & ml) override;

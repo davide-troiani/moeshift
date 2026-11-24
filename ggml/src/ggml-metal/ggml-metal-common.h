@@ -41,6 +41,8 @@ bool ggml_mem_ranges_add(ggml_mem_ranges_t mrs, const struct ggml_tensor * tenso
 // - new dst range overlaps with any existing range (src or dst)
 bool ggml_mem_ranges_check(ggml_mem_ranges_t mrs, const struct ggml_tensor * tensor);
 
+int ggml_metal_inkling_fusion_span(const struct ggml_cgraph * gf, int first, int end);
+
 // reorder the nodes in the graph to improve concurrency, while respecting fusion
 //
 // note: this implementation is generic and not specific to metal

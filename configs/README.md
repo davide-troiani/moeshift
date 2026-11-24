@@ -1,10 +1,13 @@
 # MoEShift configuration
 
-The [standard template](moeshift.json) includes both tested model configurations:
+The wizard uses the following SSD presets. The [standard template](moeshift.json)
+contains the Qwen profiles. The [Inkling template](inkling-2-mini.json) is also
+available as a standalone config.
 
-| Model ID and alias | Prefill slots | Protected slots per layer |
+| Model ID and alias | Prefill slots | Protected slots per layer or visit |
 |---|---:|---:|
 | `qwen-3.8-flash-next-rco-gsq-iq3-xxs` | 512 | 24 |
+| `inkling-2-mini` | 128 | 6 |
 | `qwen-3.6-35b-a3b-q6-xl` | 256 | 24 |
 
 ## Ordinary GGUF models
@@ -33,14 +36,14 @@ expert banks, growing KV buffers or the GPU keepalive.
 
 Both kinds of model configurations can coexist under `models`. Existing SSD model configurations need
 no migration. Architecture comes from the GGUF, not the alias: `moe-experts`
-requires `qwen4exp` or `qwen35moe` and a matching manifest. Invalid experts cause
+requires `qwen4exp`, `qwen35moe` or `inkling2_loop` and a matching manifest. Invalid experts cause
 an error; the server never silently switches to ordinary loading.
 Qwen models may also use ordinary loading by omitting the expert settings.
 A full Qwen model may require substantially more memory than its SSD model configuration.
 
 See [architectures and verification status](../docs/supported-architectures.md).
-The setup wizard retains its two tested SSD presets; configure other models
-manually. The following preparation steps apply only to SSD model configurations.
+The wizard prepares experts for the three presets. Use the manual setup steps
+below to configure a model outside the wizard.
 
 ## Manual setup
 
@@ -102,31 +105,30 @@ before the first SSE chunk (including prompt processing) and during later pauses
 without data. A stream that keeps sending data can run longer than the timeout. Clients may have shorter timeouts
 of their own. The separate model-loading deadline remains 600 seconds.
 
-Both shipped LRFU model configurations use a 12-slot decode window, prediction depth 3 and
-24 protected slots per layer. Positive protected slots require that combination
-and enabled prefetch. The policy scores actual router demand with a 32-step
-half-life; it does not change routing top-k, expert weights or precision.
+The SSD presets use a 12-slot decode window and prediction depth 3.
+Positive protected slots require that combination with prefetch enabled.
+The policy scores actual router demand with a 32-step half-life.
 
 | Setting | Default and purpose |
 |---|---|
 | `host`, `port` | `127.0.0.1`, `8080`; localhost only |
 | `timeout` | `600` seconds; HTTP read/write timeout for the public server, proxy and worker. Integer in `1..2147483`. Increase it for slow prompt processing or long non-streaming responses. |
-| `args.model`, `args.moe-experts` | First GGUF shard (required); matching expert directory/manifest (optional, Qwen SSD model configurations only) |
+| `args.model`, `args.moe-experts` | First GGUF shard (required); matching expert directory/manifest for SSD profiles |
 | `args.alias` | Model ID; must equal its key under `models` |
 | `args.ctx-size`, `args.ctx-checkpoints` | `65536` tokens; `1` checkpoint |
-| `args.threads` | `10` CPU threads |
+| `args.threads` | `10` CPU threads for Qwen and `8` for Inkling |
 | `args.prefill-max-tokens` | `3072` tokens per prefill microbatch |
-| `args.moe-prefill-bank`, `args.moe-decode-bank` | `512` / `256` shared expert slots during prefill (Flash Next / Qwen3.6); larger banks use more RAM; `0` shared slots retained during decode |
+| `args.moe-prefill-bank`, `args.moe-decode-bank` | `512` for Flash Next, `256` for Qwen3.6 and `128` for Inkling. Larger prefill banks use more RAM. All presets retain `0` shared slots during decode. |
 | `args.n-gpu-layers`, `args.flash-attn` | `99`, `on`; expert execution requires Metal |
 | `args.cache-type-k`, `args.cache-type-v` | `q8_0` KV quantization; the Qwen4Exp indexer stores keys only |
-| `args.no-mmap` | `true`; explicit reads for Qwen weights |
-| `env.LLAMA_MOE_DECODE_WINDOW` | `12` decode slots per layer; combined with 3 prefetch slots and 24 protected slots, the default total is 39 |
-| `env.LLAMA_MOE_PROTECTED_SLOTS` | `24` additional protected slots; larger values use more RAM and can reduce SSD reads; `0` disables the protected tier |
+| `args.no-mmap` | `true` for explicit reads of model weights |
+| `env.LLAMA_MOE_DECODE_WINDOW` | `12` decode slots per layer |
+| `env.LLAMA_MOE_PROTECTED_SLOTS` | `24` additional protected slots for Qwen and `6` for Inkling. Larger values use more RAM and can reduce SSD reads. Set to `0` to disable the protected tier. |
 | `env.LLAMA_MOE_LOOKAHEAD_PREFETCH` | `1`; enable predictive expert reads |
 | `env.LLAMA_MOE_LOOKAHEAD_PREFETCH_DEPTH`, `env.LLAMA_MOE_PREFETCH_READ` | Predict `3` experts, read `2` |
 | `env.LLAMA_MOE_PREFILL_PIPELINE` | `1`; overlap prefill reads with computation |
 | `env.LLAMA_GPU_KEEPALIVE` | `1`; keep the GPU active while the worker exists; `0` disables it |
-| `env.LLAMA_MOE_QUIET` | `1`; suppress expert diagnostics; `0` enables them |
+| `env.LLAMA_MOE_QUIET` | `1` suppress expert diagnostics; `0` enables them. |
 
 Use the argument names as CLI overrides (`--ctx-size`, `--threads`, etc.).
 `--no-mmap true/false` overrides its JSON boolean. Cache overrides are

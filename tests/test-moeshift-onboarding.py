@@ -128,14 +128,14 @@ class OnboardingTest(unittest.TestCase):
             setup.prepare(preset, first, self.home)
 
     def test_complete_managed_qwen_skips_source_and_download(self):
-        preset = self.fixture(1)
+        preset = self.fixture(-1)
         managed = self.home / ".moeshift/models" / preset.alias
         managed.mkdir(parents=True)
         name = preset.files[0][0]
         shutil.copyfile(self.source / name, managed / name)
         self.mock("onboarding.can_resolve", return_value=True)
         self.mock("onboarding.download", side_effect=AssertionError("unnecessary download"))
-        with patch("onboarding.choose", return_value=1):
+        with patch("onboarding.choose", return_value=len(setup.PRESETS) - 1):
             self.assertTrue(setup.wizard(self.config, False))
         config = json.loads(self.config.read_text())
         self.assertEqual(list(config["models"]), [preset.alias])
@@ -143,8 +143,23 @@ class OnboardingTest(unittest.TestCase):
         self.assertEqual(args["model"], str(managed / name))
         self.assertEqual(args["moe-experts"], str(managed / "experts"))
 
-    def test_wrong_preset_and_space(self):
+    def test_inkling_menu_order_and_default_config(self):
+        self.assertEqual([p.arch for p in setup.PRESETS], ["qwen4exp", "inkling2_loop", "qwen35moe"])
         preset = self.fixture(1)
+        model = self.source / preset.files[0][0]
+        self.mock("onboarding.can_resolve", return_value=False)
+        self.mock("onboarding.download", side_effect=AssertionError("offline"))
+        with patch("onboarding.choose", return_value=1) as menu, patch("builtins.input", return_value=str(model)):
+            self.assertTrue(setup.wizard(self.config, False))
+        self.assertIn("Inkling-2-Mini", menu.call_args.args[1][1])
+        expected = json.loads((ROOT / "configs/inkling-2-mini.json").read_text())
+        folder = self.home / ".moeshift/models" / preset.alias / "experts"
+        expected["models"][preset.alias]["args"].update({"model": str(model), "moe-experts": str(folder)})
+        self.assertEqual(json.loads(self.config.read_text()), expected)
+        self.assertTrue((folder / "manifest.json").is_file())
+
+    def test_wrong_preset_and_space(self):
+        preset = self.fixture(-1)
         path = self.source / preset.files[0][0]
         with self.assertRaisesRegex(ValueError, "architecture"):
             setup.validate_shard(path, replace(preset, arch="wrong"), 0)
@@ -159,7 +174,8 @@ class OnboardingTest(unittest.TestCase):
         with patch("onboarding.choose", return_value=0), self.assertRaises(SystemExit):
             setup.wizard(self.config, True)
         self.assertEqual(self.config.read_bytes(), b"broken")
-        with patch("onboarding.choose", side_effect=[1, 2]):
+        with patch("onboarding.choose", side_effect=[1, 1, len(setup.PRESETS)]), \
+             patch("builtins.input", return_value=""):
             self.assertFalse(setup.wizard(self.config, True))
         self.assertEqual(json.loads(self.config.read_text()), json.loads(setup.TEMPLATE.read_text()))
         self.assertEqual(next(self.home.glob("config.json.backup-*")).read_bytes(), b"broken")
@@ -181,7 +197,7 @@ class OnboardingTest(unittest.TestCase):
             self.assertIn("ETA", self.log.getvalue())
 
     def test_hf_download_and_direct_fallback(self):
-        preset = self.fixture(0)
+        preset = replace(self.fixture(0), revision="pinned-revision")
         managed = self.home / "library"
         managed.mkdir()
         fake = self.home / "hf"
@@ -189,6 +205,7 @@ class OnboardingTest(unittest.TestCase):
 import shutil, sys
 from pathlib import Path
 remote = Path(sys.argv[3])
+assert sys.argv[4:6] == ["--revision", "pinned-revision"]
 if remote.name.endswith("00002-of-00002.gguf"):
     sys.exit(1)
 out = Path(sys.argv[-1]) / remote
@@ -201,16 +218,17 @@ print("reconstructing file: 50%|###| 4.10kB / 8.20kB", flush=True)
         response = BytesIO(body)
         response.status = 200
         with patch("shutil.which", return_value=str(fake)), \
-             patch("onboarding.urlopen", return_value=response), patch("onboarding.choose", return_value=0), \
+             patch("onboarding.urlopen", return_value=response) as request, patch("onboarding.choose", return_value=0), \
              patch("onboarding.transfer_status", wraps=setup.transfer_status) as progress:
             setup.download(preset, managed)
         self.assertTrue(any(call.args[0] == 4100 for call in progress.call_args_list))
+        self.assertIn(f"/resolve/{preset.revision}/", request.call_args.args[0].full_url)
         self.assertIn("ETA", self.log.getvalue())
         for remote, _ in preset.files:
             self.assertEqual((managed / Path(remote).name).read_bytes(), (self.source / Path(remote).name).read_bytes())
 
     def test_temporary_hf_install_failure_cleanup(self):
-        preset = self.fixture(1)
+        preset = self.fixture(-1)
         dest = self.home / "library"
         dest.mkdir()
         payload = next(self.source.glob("*.gguf")).read_bytes()

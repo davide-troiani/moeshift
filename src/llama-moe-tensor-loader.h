@@ -4,10 +4,10 @@
 #include <cstdlib>
 #include <map>
 
-// Shared prefill banks and per-layer decode windows, grouped by family and quantization.
+// Shared prefill banks and decode windows, grouped by family and quantization.
 class llama_moe_tensor_loader {
 public:
-    llama_moe_tensor_loader(llama_model_base & model, llama_model_loader & ml);
+    llama_moe_tensor_loader(llama_model_base & model, llama_model_loader & ml, std::vector<llama_layer> * visits = nullptr);
     ggml_tensor * create(const LLM_TN_IMPL & name, const std::initializer_list<int64_t> & dims, int flags);
     void create_gate_up(llama_layer & layer, int il, int64_t n_ff_exp, int flags);
     void finish();
@@ -15,9 +15,13 @@ private:
     llama_model_base & model;
     llama_model_loader & ml;
     const LLM_TN tn;
+    std::vector<llama_layer> & slot_layers;
+    const bool shared_prefill;
     int64_t dec_c, k_pf, prefill_cap;
     bool dec_enabled;
     std::vector<int32_t> layer_c;
+    std::vector<int> decode_owner;
+    std::vector<int64_t> decode_width;
     std::map<std::pair<ggml_type, size_t>, std::vector<int>> groups[4];
     std::map<std::string, int64_t> group_slots;
     int64_t width_of(int il) const {

@@ -104,6 +104,9 @@ struct llama_hparams {
     struct llama_hparams_convnext convnext;
 
     uint32_t n_shortconv_l_cache  = 0;
+    uint32_t n_sconv_channels     = 0;
+    float    situ_beta            = 0.0f;
+    float    situ_linear_beta     = 0.0f;
 
     std::array<uint32_t, LLAMA_MAX_LAYERS> n_head_arr;
     std::array<uint32_t, LLAMA_MAX_LAYERS> n_head_kv_arr;

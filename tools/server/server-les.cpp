@@ -168,7 +168,7 @@ int main(int argc, char ** argv) {
         const auto key = metadata ? gguf_find_key(metadata.get(), "general.architecture") : -1;
         if (key < 0 || gguf_get_kv_type(metadata.get(), key) != GGUF_TYPE_STRING ||
                 !llm_arch_supports_les(llm_arch_from_string(gguf_get_val_str(metadata.get(), key)))) {
-            std::cerr << "moeshift: moe-experts requires a qwen4exp or qwen35moe GGUF model\n";
+            std::cerr << "moeshift: moe-experts requires a qwen4exp, qwen35moe or inkling2_loop GGUF model\n";
             return 1;
         }
 #ifndef LLAMA_LES_METAL_KEEPALIVE

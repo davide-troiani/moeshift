@@ -2,6 +2,7 @@
 
 #include "ggml-impl.h"
 #include "ggml-backend-impl.h"
+#include "ggml-metal-impl.h"
 
 #include <vector>
 
@@ -372,6 +373,42 @@ static std::vector<int> ggml_metal_graph_optimize_reorder(const std::vector<node
     return res;
 }
 
+int ggml_metal_inkling_fusion_span(const ggml_cgraph * gf, int first, int end) {
+    static constexpr ggml_op clip[] = {
+        GGML_OP_MUL, GGML_OP_SQR, GGML_OP_SUM_ROWS, GGML_OP_SQRT, GGML_OP_SCALE,
+        GGML_OP_FILL, GGML_OP_DIV, GGML_OP_CLAMP, GGML_OP_MUL,
+    };
+    static constexpr ggml_op situ[] = {
+        GGML_OP_SCALE, GGML_OP_UNARY, GGML_OP_SCALE, GGML_OP_UNARY, GGML_OP_MUL,
+        GGML_OP_SCALE, GGML_OP_UNARY, GGML_OP_SCALE, GGML_OP_MUL,
+    };
+
+    const auto * node = gf->nodes[first];
+    const ggml_op * ops;
+    int count;
+    switch (node->op_params[GGML_INKLING_FUSION_PARAM]) {
+        case GGML_INKLING_CLIP: {
+            const bool scaled = node->op == GGML_OP_MUL;
+            ops = clip + (scaled ? 0 : 1);
+            count = scaled ? 9 : 8;
+        } break;
+        case GGML_INKLING_SITU:
+            ops = situ;
+            count = 9;
+            break;
+        default:
+            return 0;
+    }
+    if (first + count > end) {
+        return 0;
+    }
+    int indices[9];
+    for (int i = 0; i < count; ++i) {
+        indices[i] = first + i;
+    }
+    return ggml_can_fuse_subgraph_ext(gf, indices, count, ops, &indices[count - 1], 1) ? count : 0;
+}
+
 void ggml_graph_optimize(ggml_cgraph * gf) {
     constexpr int MAX_FUSE = 16;
 
@@ -393,7 +430,12 @@ void ggml_graph_optimize(ggml_cgraph * gf) {
 
         // fuse only ops that start with these operations
         // can be expanded when needed
-        if (node.op() == GGML_OP_ADD ||
+        const int inkling_fusion = ggml_metal_inkling_fusion_span(gf, i, n);
+        if (inkling_fusion > 0) {
+            for (int k = 1; k < inkling_fusion; ++k) {
+                node.add_fused(gf->nodes[++i]);
+            }
+        } else if (node.op() == GGML_OP_ADD ||
             node.op() == GGML_OP_NORM ||
             node.op() == GGML_OP_RMS_NORM) {
             ops[0] = node.op();

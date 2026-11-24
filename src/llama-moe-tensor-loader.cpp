@@ -4,7 +4,10 @@
 #include "llama-impl.h"
 #include <algorithm>
 
-llama_moe_tensor_loader::llama_moe_tensor_loader(llama_model_base & model, llama_model_loader & ml) : model(model), ml(ml), tn(model.arch) {
+llama_moe_tensor_loader::llama_moe_tensor_loader(llama_model_base & model, llama_model_loader & ml,
+        std::vector<llama_layer> * visits) :
+    model(model), ml(ml), tn(model.arch), slot_layers(visits ? *visits : model.layers),
+    shared_prefill(llm_arch_supports_les(model.arch) && (visits || !std::getenv("LLAMA_QWEN_SEPARATE_PREFILL_BANKS"))) {
     dec_c = model.moe_decode_window();
     // 每层解码视图 = 缓存区 c + 预读暂存区 K。分区见 llama-moe-slot.cpp 的
     // install_prefetch_into_window：预读只在暂存区分配，不会淘汰缓存区条目。
@@ -18,14 +21,41 @@ llama_moe_tensor_loader::llama_moe_tensor_loader(llama_model_base & model, llama
     // 某个 MoE 层序号对应的总宽度（c_il + K）
     prefill_cap = model.moe_slot_bank_size();
 
+    decode_owner.resize(model.hparams.n_layer);
+    decode_width.resize(model.hparams.n_layer);
+    for (int il = 0; il < int(model.hparams.n_layer); ++il) {
+        decode_owner[il] = il;
+        decode_width[il] = width_of(il);
+    }
+    if (model.arch == LLM_ARCH_INKLING2_LOOP && dec_enabled &&
+            std::all_of(decode_width.begin(), decode_width.end(), [](int64_t width) { return width > 15; }) &&
+            std::all_of(layer_c.begin(), layer_c.end(), [](int32_t width) { return width == 12; })) {
+        // Repeated visits spend their existing decode slots on one copy of each expert.
+        std::vector<int> first_visit(model.hparams.n_layer, -1);
+        const int64_t cap = std::min<int64_t>({prefill_cap, model.hparams.n_expert, 1024});
+        for (int il = 0; il < int(model.hparams.n_layer); ++il) {
+            int & first = first_visit[model.moe_physical_layer(il)];
+            if (first < 0) {
+                first = il;
+            } else {
+                decode_owner[il] = first;
+                decode_width[first] = std::min(cap, decode_width[first] + decode_width[il]);
+                decode_width[il] = 0;
+            }
+        }
+    }
+
     const llm_tensor fam_ids[4] = {
         LLM_TENSOR_FFN_GATE_UP_EXPS, LLM_TENSOR_FFN_GATE_EXPS,
         LLM_TENSOR_FFN_UP_EXPS,      LLM_TENSOR_FFN_DOWN_EXPS,
     };
+    const auto name_for_visit = [&](int fi, int il) {
+        return tn(fam_ids[fi], "weight", model.moe_physical_layer(il)).str();
+    };
     // family -> (bytes_per_expert -> 层号升序)
     for (int il = 0; il < (int) model.hparams.n_layer; ++il) {
         for (int fi = 0; fi < 4; ++fi) {
-            const auto * e = model.moe_experts_entry(tn(fam_ids[fi], "weight", il).str().c_str());
+            const auto * e = model.moe_experts_entry(name_for_visit(fi, il).c_str());
             if (e) {
                 groups[fi][{e->type, e->bytes_per_expert}].push_back(il);
             }
@@ -33,7 +63,7 @@ llama_moe_tensor_loader::llama_moe_tensor_loader(llama_model_base & model, llama
     }
     // Qwen's mixed quantizations can share transient prefill storage. Decode
     // windows use byte offsets, so different expert strides never overlap.
-    if (llm_arch_supports_les(model.arch) && !std::getenv("LLAMA_QWEN_SEPARATE_PREFILL_BANKS")) {
+    if (shared_prefill) {
         for (int fi = 0; fi < 4; ++fi) {
             std::vector<int> members;
             for (const auto & group : groups[fi]) {
@@ -41,7 +71,7 @@ llama_moe_tensor_loader::llama_moe_tensor_loader(llama_model_base & model, llama
             }
             if (members.empty()) continue;
             std::sort(members.begin(), members.end());
-            const auto * first_entry = model.moe_experts_entry(tn(fam_ids[fi], "weight", members.front()).str().c_str());
+            const auto * first_entry = model.moe_experts_entry(name_for_visit(fi, members.front()).c_str());
             const auto group_key = std::make_pair(first_entry->type, first_entry->bytes_per_expert);
             groups[fi].clear();
             groups[fi][group_key] = std::move(members);
@@ -55,21 +85,21 @@ llama_moe_tensor_loader::llama_moe_tensor_loader(llama_model_base & model, llama
             // n_members * 单层宽度。
             size_t max_stride = kv.first.second;
             for (int il : kv.second) {
-                max_stride = std::max(max_stride, model.moe_experts_entry(tn(fam_ids[fi], "weight", il).str().c_str())->bytes_per_expert);
+                max_stride = std::max(max_stride, model.moe_experts_entry(name_for_visit(fi, il).c_str())->bytes_per_expert);
             }
             size_t bytes = prefill_cap * max_stride;
             for (int il : kv.second) {
-                const auto * e = model.moe_experts_entry(tn(fam_ids[fi], "weight", il).str().c_str());
-                bytes += width_of(il) * e->bytes_per_expert;
+                const auto * e = model.moe_experts_entry(name_for_visit(fi, il).c_str());
+                bytes += decode_width[il] * e->bytes_per_expert;
             }
             if (llm_arch_supports_les(model.arch) && dec_enabled) {
                 size_t stride_sum = 0;
                 for (int il : kv.second)
-                    stride_sum += model.moe_experts_entry(tn(fam_ids[fi], "weight", il).str().c_str())->bytes_per_expert;
+                    stride_sum += model.moe_experts_entry(name_for_visit(fi, il).c_str())->bytes_per_expert;
                 const size_t required = model.hparams.n_expert_used + k_pf;
                 bytes = std::max(bytes, required * stride_sum);
             }
-            group_slots[tn(fam_ids[fi], "weight", kv.second.front()).str()] =
+            group_slots[name_for_visit(fi, kv.second.front())] =
                 (bytes + kv.first.second - 1) / kv.first.second;
         }
     }
@@ -161,16 +191,18 @@ void llama_moe_tensor_loader::finish() {
             { &llama_layer::ffn_up_exps,      &llama_layer::ffn_up_exps_dec      },
             { &llama_layer::ffn_down_exps,    &llama_layer::ffn_down_exps_dec    },
         };
+        const auto tensor_for_visit = [&](int fi, int il) {
+            return model.layers[model.moe_physical_layer(il)].*fams[fi].pf;
+        };
 
         int overlay_width = 0;
         if (llm_arch_supports_les(model.arch) && dec_enabled &&
-            !std::getenv("LLAMA_LES_DECODE_BANK") &&
-            !std::getenv("LLAMA_QWEN_SEPARATE_PREFILL_BANKS")) {
+            !std::getenv("LLAMA_LES_DECODE_BANK") && shared_prefill) {
             overlay_width = 512;
             for (int fi = 0; fi < 4; ++fi) for (const auto & kv : groups[fi]) {
                 size_t stride_sum = 0;
-                for (int il : kv.second) stride_sum += (model.layers[il].*fams[fi].pf)->nb[2];
-                const auto * base = model.layers[kv.second.front()].*fams[fi].pf;
+                for (int il : kv.second) stride_sum += tensor_for_visit(fi, il)->nb[2];
+                const auto * base = tensor_for_visit(fi, kv.second.front());
                 GGML_ASSERT(stride_sum > 0);
                 overlay_width = std::min(overlay_width, int(ggml_nbytes(base) / stride_sum));
             }
@@ -180,6 +212,7 @@ void llama_moe_tensor_loader::finish() {
         }
         size_t resident = 0;
         int n_win = 0;
+        int n_dec_win = 0;
         int n_grp = 0;
 
         for (int fi = 0; fi < 4; ++fi) {
@@ -189,7 +222,7 @@ void llama_moe_tensor_loader::finish() {
                     continue;
                 }
                 const int first = members.front();
-                ggml_tensor * base = model.layers[first].*fams[fi].pf;
+                ggml_tensor * base = tensor_for_visit(fi, first);
                 if (!base) {
                     continue;
                 }
@@ -204,24 +237,31 @@ void llama_moe_tensor_loader::finish() {
                 }
                 resident += ggml_nbytes(base);
                 n_grp++;
-                if (llm_arch_supports_les(model.arch) && !std::getenv("LLAMA_QWEN_SEPARATE_PREFILL_BANKS")) {
+                if (shared_prefill) {
                     size_t max_stride = e->bytes_per_expert;
-                    for (int il : members) max_stride = std::max(max_stride, (model.layers[il].*fams[fi].pf)->nb[2]);
+                    for (int il : members) max_stride = std::max(max_stride, tensor_for_visit(fi, il)->nb[2]);
                     size_t decode_offset = overlay_width ? 0 : prefill_cap * max_stride;
                     const std::string base_name = ggml_get_name(base);
                     ggml_set_name(base, (base_name + ".base").c_str());
                     for (int il : members) {
-                        auto & layer = model.layers[il];
-                        auto * original = layer.*fams[fi].pf;
-                        const std::string name = il == first ? base_name : ggml_get_name(original);
+                        auto & layer = slot_layers[il];
+                        auto * original = tensor_for_visit(fi, il);
+                        const std::string name = original == base ? base_name : ggml_get_name(original);
                         const auto * entry = model.moe_experts_entry(name.c_str());
-                        if (original != base) ml.alias_expert_slot_tensor(original, base);
+                        if (original != base && !original->view_src) ml.alias_expert_slot_tensor(original, base);
                         layer.*fams[fi].pf = ml.typed_expert_slot_view(
                             name.c_str(), base, original, 0, prefill_cap);
                         if (dec_enabled) {
-                            layer.*fams[fi].pf_dec = ml.typed_expert_slot_view(
-                                (name + ".dec").c_str(), base, original, decode_offset, overlay_width ? overlay_width : width_of(il));
-                            decode_offset += (overlay_width ? overlay_width : width_of(il)) * entry->bytes_per_expert;
+                            if (decode_owner[il] != il) {
+                                layer.*fams[fi].pf_dec = slot_layers[decode_owner[il]].*fams[fi].pf_dec;
+                                GGML_ASSERT(layer.*fams[fi].pf_dec);
+                            } else {
+                                const int64_t width = overlay_width ? overlay_width : decode_width[il];
+                                layer.*fams[fi].pf_dec = ml.typed_expert_slot_view(
+                                    (name + ".dec").c_str(), base, original, decode_offset, width);
+                                decode_offset += width * entry->bytes_per_expert;
+                                n_dec_win++;
+                            }
                         }
                         n_win++;
                     }
@@ -261,6 +301,7 @@ void llama_moe_tensor_loader::finish() {
                         const int64_t wj = width_of(members[j]);
                         L.*fams[fi].pf_dec = ml.window_expert_slot_tensor(
                             n2.c_str(), base, off, wj, e->bytes_per_expert);
+                        n_dec_win++;
                     }
                 }
             }
@@ -270,7 +311,7 @@ void llama_moe_tensor_loader::finish() {
             "%s: MoE bank %d groups (family x quant), %.2f MiB resident; %d prefill windows%s\n",
             __func__, n_grp, resident / 1024.0 / 1024.0, n_win,
             dec_enabled ? format(", %d decode windows (c=%d, 按层宽度 %s)",
-                                 n_win, (int) dec_c,
+                                 n_dec_win, (int) dec_c,
                                  getenv("LLAMA_MOE_LAYER_WINDOWS") ? "on" : "off").c_str()
                         : " (no decode windows)");
     }

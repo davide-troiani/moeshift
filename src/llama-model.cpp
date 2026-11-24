@@ -262,6 +262,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             return new llama_model_openai_moe(params);
         case LLM_ARCH_FALCON_H1:
             return new llama_model_falcon_h1(params);
+        case LLM_ARCH_INKLING2_LOOP:
+            return new llama_model_inkling2_loop(params);
         case LLM_ARCH_LFM2:
             return new llama_model_lfm2(params);
         case LLM_ARCH_LFM2MOE:
@@ -1225,7 +1227,7 @@ void llama_model_base::load_hparams(llama_model_loader & ml) {
 
     if (pimpl->moe_experts) {
         if (!llm_arch_supports_les(arch)) {
-            throw std::runtime_error("MoE experts currently supports only qwen35moe and qwen4exp");
+            throw std::runtime_error("MoE experts requires qwen4exp, qwen35moe or inkling2_loop");
         }
         if (pimpl->moe_experts->expert_count() != (int32_t) hparams.n_expert ||
             pimpl->moe_experts->expert_used_count() != (int32_t) hparams.n_expert_used) {
@@ -1286,6 +1288,8 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
 
     const int n_layer      = hparams.n_layer;
     const int n_gpu_layers = this->n_gpu_layers();
+    const auto * inkling = arch == LLM_ARCH_INKLING2_LOOP ? static_cast<const llama_model_inkling2_loop *>(this) : nullptr;
+    const int n_layer_weights = inkling ? inkling->n_phys : n_layer;
 
     const bool use_mmap_buffer = true;
 
@@ -1345,10 +1349,10 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         splits[i] /= split_sum;
     }
 
-    const int i_gpu_start = std::max(int(hparams.n_layer) + 1 - n_gpu_layers, 0);
-    const int act_gpu_layers = devices.empty() ? 0 : std::min(n_gpu_layers, int(n_layer) + 1);
+    const int i_gpu_start = std::max(n_layer_weights + 1 - n_gpu_layers, 0);
+    const int act_gpu_layers = devices.empty() ? 0 : std::min(n_gpu_layers, n_layer_weights + 1);
     auto get_layer_buft_list = [&](int il) -> llama_model::impl::layer_dev {
-        const bool is_swa = il < int(hparams.n_layer) && hparams.is_swa(il);
+        const bool is_swa = il < n_layer_weights && hparams.is_swa(weight_layer_slot(il));
         if (il < i_gpu_start || (il - i_gpu_start) >= act_gpu_layers) {
             LLAMA_LOG_DEBUG("load_tensors: layer %3d assigned to device %s, is_swa = %d\n", il, ggml_backend_dev_name(cpu_dev), is_swa);
             return {cpu_dev, &pimpl->cpu_buft_list};
@@ -1366,11 +1370,11 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     // assign the repeating layers to the devices according to the splits
     pimpl->dev_layer.resize(n_layer);
     for (int il = 0; il < n_layer; ++il) {
-        pimpl->dev_layer[il] = get_layer_buft_list(il);
+        pimpl->dev_layer[il] = get_layer_buft_list(inkling ? inkling->physical_layer(il) : il);
     }
 
     // assign the output layer
-    pimpl->dev_output = get_layer_buft_list(n_layer);
+    pimpl->dev_output = get_layer_buft_list(n_layer_weights);
 
     const auto TENSOR_NOT_REQUIRED = llama_model_loader::TENSOR_NOT_REQUIRED;
 
@@ -1651,7 +1655,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     }
 
     if (llama_supports_gpu_offload()) {
-        const int n_gpu = std::min(n_gpu_layers, int(hparams.n_layer));
+        const int n_gpu = std::min(n_gpu_layers, n_layer_weights);
 
         int n_repeating = n_gpu;
         if (n_repeating > 0) {
@@ -1660,8 +1664,8 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         }
         LLAMA_LOG_INFO("%s: offloading %d repeating layers to GPU\n", __func__, n_repeating);
 
-        const int max_backend_supported_layers = hparams.n_layer + 1;
-        const int max_offloadable_layers       = hparams.n_layer + 1;
+        const int max_backend_supported_layers = n_layer_weights + 1;
+        const int max_offloadable_layers       = n_layer_weights + 1;
 
         LLAMA_LOG_INFO("%s: offloaded %d/%d layers to GPU\n", __func__, std::min(n_gpu_layers, max_offloadable_layers), max_backend_supported_layers);
     }
@@ -1694,8 +1698,12 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     return true;
 }
 
+int llama_model_base::weight_layer_slot(int bid) const {
+    return arch == LLM_ARCH_INKLING2_LOOP ? static_cast<const llama_model_inkling2_loop &>(*this).first_slot(bid) : bid;
+}
+
 ggml_tensor * llama_model_base::create_tensor(llama_model_loader & ml, const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags) {
-    const buft_list_t * buft_list_layer = tn.bid == -1 ? nullptr : pimpl->dev_layer.at(tn.bid).buft_list;
+    const buft_list_t * buft_list_layer = tn.bid == -1 ? nullptr : pimpl->dev_layer.at(weight_layer_slot(tn.bid)).buft_list;
     return ml.create_tensor(
         hparams, &pimpl->cpu_buft_list, pimpl->dev_input.buft_list, pimpl->dev_output.buft_list, buft_list_layer,
         tn, ne, flags);
@@ -1712,7 +1720,7 @@ ggml_tensor * llama_model_base::create_tensor_own_alloc(llama_model_loader & ml,
     // 所以这个改动对现有路径是透明的。
     ggml_backend_dev_t dev = tn.bid == -1
         ? nullptr
-        : ggml_backend_buft_get_device(pimpl->dev_layer.at(tn.bid).buft_list->front().second);
+        : ggml_backend_buft_get_device(pimpl->dev_layer.at(weight_layer_slot(tn.bid)).buft_list->front().second);
 
     // 诊断开关：退回「和非专家权重共用一个 buffer」的旧行为，用于 A/B。
     static const bool disabled = [] {
@@ -1742,7 +1750,7 @@ ggml_tensor * llama_model_base::create_expert_tensor_from_manifest(llama_model_l
     // 的文件映射包住（见 create_tensor_own_alloc 的说明）。
     ggml_backend_dev_t dev = tn.bid == -1
         ? nullptr
-        : ggml_backend_buft_get_device(pimpl->dev_layer.at(tn.bid).buft_list->front().second);
+        : ggml_backend_buft_get_device(pimpl->dev_layer.at(weight_layer_slot(tn.bid)).buft_list->front().second);
 
     const auto it = dev ? pimpl->alloc_only_buft.find(dev) : pimpl->alloc_only_buft.end();
     if (it == pimpl->alloc_only_buft.end()) {
@@ -2101,7 +2109,18 @@ int32_t llama_model::moe_slot_bank_size() const {
 }
 
 int32_t llama_model::moe_experts_layer_count() const {
-    return pimpl->moe_experts ? pimpl->moe_experts->layer_count() : 0;
+    if (!pimpl->moe_experts) {
+        return 0;
+    }
+    return arch == LLM_ARCH_INKLING2_LOOP ? hparams.n_layer : pimpl->moe_experts->layer_count();
+}
+
+int llama_model::moe_physical_layer(int il) const {
+    return arch == LLM_ARCH_INKLING2_LOOP ? static_cast<const llama_model_inkling2_loop &>(*this).physical_layer(il) : il;
+}
+
+const std::vector<llama_layer> & llama_model::moe_slot_layers() const {
+    return arch == LLM_ARCH_INKLING2_LOOP ? static_cast<const llama_model_inkling2_loop &>(*this).slot_layers : layers;
 }
 
 int32_t llama_model::moe_decode_window() const {
@@ -2112,7 +2131,7 @@ int32_t llama_model::moe_decode_window() const {
     if (!s || !*s) {
         return 0;                       // 未设置 = 关闭
     }
-    const int32_t n_moe = pimpl->moe_experts->layer_count();
+    const int32_t n_moe = moe_experts_layer_count();
     if (n_moe <= 0) {
         return 0;
     }
@@ -2147,7 +2166,7 @@ std::vector<int32_t> llama_model::moe_layer_windows() const {
     if (!pimpl->moe_experts) {
         return out;
     }
-    const int32_t n_moe = pimpl->moe_experts->layer_count();
+    const int32_t n_moe = moe_experts_layer_count();
     if (n_moe <= 0) {
         return out;
     }
@@ -2308,7 +2327,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                     llama_memory_hybrid::layer_filter_cb filter_recr = nullptr;
                     llama_memory_hybrid::layer_filter_cb filter_idx = nullptr;
                     const bool needs_mem_idx = arch == LLM_ARCH_QWEN4EXP;
-                    if (arch == LLM_ARCH_FALCON_H1) {
+                    if (arch == LLM_ARCH_FALCON_H1 || arch == LLM_ARCH_INKLING2_LOOP) {
                         filter_attn = [&](int32_t) { return true; };
                         filter_recr = [&](int32_t) { return true; };
                     } else if (arch == LLM_ARCH_NEMOTRON_H || arch == LLM_ARCH_NEMOTRON_H_MOE) {
@@ -2686,6 +2705,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_NEMOTRON_H:
         case LLM_ARCH_NEMOTRON_H_MOE:
         case LLM_ARCH_KIMI_LINEAR:
+        case LLM_ARCH_INKLING2_LOOP:
             return LLAMA_ROPE_TYPE_NONE;
 
         // use what we call a normal RoPE, operating on pairs of consecutive head values

@@ -2211,6 +2211,10 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                 tokenizer_pre == "talkie") {
                 pre_type = LLAMA_VOCAB_PRE_TYPE_GPT4O;
                 clean_spaces = false;
+            } else if (tokenizer_pre == "inkling2") {
+                pre_type = LLAMA_VOCAB_PRE_TYPE_GPT4O;
+                special_bos_id = LLAMA_TOKEN_NULL;
+                clean_spaces = false;
             } else if (
                 tokenizer_pre == "tiny_aya") {
                 pre_type = LLAMA_VOCAB_PRE_TYPE_TINY_AYA;
@@ -2682,6 +2686,7 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                     || t.first == "<|return|>" // o200k_harmony
                     || t.first == "<|call|>"   // o200k_harmony
                     || t.first == "<|flush|>"  // solar-open
+                    || (ml.get_arch() == LLM_ARCH_INKLING2_LOOP && t.first == "<|content_model_end_sampling|>")
                     || t.first == "<|calls|>"  // solar-open
                     || t.first == "<end_of_turn>"
                     || t.first == "<|endoftext|>"

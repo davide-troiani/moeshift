@@ -10,7 +10,7 @@ configuration contains a model configuration for each tested model.
 ## Supported LLM architectures
 
 See [supported models and tools](supported-architectures.md) for model availability
-and verification status. The table below describes the two architectures optimized
+and verification status. The table below describes the architectures optimized
 for SSD streaming. Other GGUF models use the standard inference path in the same
 localhost server.
 
@@ -18,10 +18,19 @@ localhost server.
 |---|---|---|
 | `qwen4exp` | Qwen 3.8 Flash Next | Hybrid attention, hyper-connections, sparse-attention indexer and optional PLE |
 | `qwen35moe` | Qwen3.6-35B-A3B | Hybrid attention with standard residual connections and RMS normalization |
+| `inkling2_loop` | Inkling 2 Mini | Block attention residuals, relative-position attention, short convolutions and a three-pass loop |
 
-Both share expert loading, mixed-quantization prefill banks, adaptive phase
+The three architectures share expert loading, mixed-quantization prefill banks, adaptive phase
 changes, protected decode caching and Metal resident/missing execution.
 Appended Qwen3.6 MTP blocks are excluded from main-model expert scheduling.
+Inkling uses 48 successive layer visits over 24 physical blocks. The repeated
+visits share source weights and decode windows. Each visit keeps its own KV
+cache and convolution state.
+The looped graph adapts the llama.cpp Inkling changes, and the Metal
+NVFP4 kernels adapt the upstream implementation for the bundled ggml backend.
+[Inkling 2 model](https://github.com/ggml-org/llama.cpp/pull/32217) ·
+[Looped layers](https://github.com/ggml-org/llama.cpp/pull/32694) ·
+[NVFP4 on Metal](https://github.com/ggml-org/llama.cpp/pull/20060)
 Tested quantizations and measurements are listed in the [README](../README.md#tested-models-and-benchmarks);
 other models using these architecture names have not been validated.
 
@@ -32,7 +41,7 @@ MoEShift builds on llama.cpp through llama.cpp-omni. Its upstream foundation is
 load expert weights ahead of use, and overlap storage access with computation.
 Repacking experts into contiguous storage makes those reads practical.
 
-MoEShift develops this foundation into a Qwen runtime with adaptive prefill and
+MoEShift adds adaptive prefill and
 decode memory budgets, Metal resident/missing execution, a demand-LRFU protected
 cache, growing context buffers, a key-only indexer cache, and explicit server and
 worker lifetimes.
@@ -53,14 +62,14 @@ flowchart TB
     Client[Local chat or coding client] --> HTTP[Localhost HTTP server]
     Config[JSON model configuration and CLI overrides] --> HTTP
     HTTP -->|one inference lease| Worker[Model worker]
-    Worker --> Qwen[Qwen model graph and router]
-    Qwen --> LES[LES expert scheduler]
+    Worker --> Graph[Model graph and router]
+    Graph --> LES[LES expert scheduler]
     LES --> Readers[Demand and lookahead readers]
     SSD[(Expert files on SSD)] --> Readers
     Readers --> Cache[Host-visible Metal expert buffers]
-    Qwen --> Metal[Metal graph execution]
+    Graph --> Metal[Metal graph execution]
     Cache --> Metal
-    Context[Attention cache, indexer keys and recurrent state] <--> Qwen
+    Context[Attention cache, indexer keys and recurrent state] <--> Graph
     GGUF[(Original GGUF shards)] --> Worker
     Metal --> Worker
     Worker -->|JSON or SSE| HTTP
@@ -71,7 +80,7 @@ flowchart TB
 |---|---|
 | HTTP server | Validate the requested model, serialize inference requests and proxy responses. |
 | Model worker | Own model state, graph execution, expert readers and GPU keepalive. |
-| Qwen graph | Compute routing, attention and expert outputs, then produce token logits. |
+| Model graph | Compute routing, attention and expert outputs, then produce token logits. |
 | LES scheduler | Resolve expert IDs to slots and coordinate demand reads, lookahead and cache ownership. |
 | Metal backend | Execute graph operations and enforce readiness at the missing-expert boundary. |
 | Expert store | Supply packed, quantized expert weights through explicit file reads. |
@@ -148,7 +157,7 @@ from replacement while it is needed.
 
 ### Resident/missing overlap
 
-The optimized single-token Qwen decode graph separates selected experts into
+The optimized single-token decode graph separates selected experts into
 resident and missing work. It requires Metal placement and a supported expert
 operation layout; other graph shapes use the ordinary expert execution path.
 
@@ -191,14 +200,18 @@ missing-expert read is hidden.
 ## 6. Expert caches and phase transitions
 
 Prefill processes prompt microbatches using a shared expert bank. Decode uses
-smaller per-layer expert windows so that repeated token generation does not
-require retaining the full prefill bank.
+smaller expert windows to limit the memory required for token generation.
 
 The model configurations use 512 prefill slots for Flash Next or 256 for Qwen3.6, a zero-slot retained shared
 decode bank, and a separate per-layer decode allocation of **39 slots**:
 12 decode slots plus 3 prefetch slots form the 15-slot recent group, with
 24 additional protected slots. A slot holds the packed tensors for one expert;
 byte sizes can vary by layer and quantization.
+
+The Inkling 2 Mini preset uses 128 prefill slots and retains zero shared
+slots during decode. Its repeated visits combine their 21-slot budgets into
+one 63-slot window per looped block. Later visits use resident experts directly. See the
+[protected decode cache](les/protected-decode-cache.md#slot-ownership).
 
 ### Demand-LRFU policy
 
@@ -207,7 +220,7 @@ admissions change logical ownership without copying expert weights between
 buffers. Protected hits can return to the recent group; eligible recent victims
 can move into the protected group.
 
-For each layer and decode token, expert scores are updated before slot assignment:
+Expert scores are updated before slot assignment on each layer or loop visit:
 
 ```text
 score[e] = 2^(-1/32) * score[e] + requested[e]
@@ -220,9 +233,9 @@ compares an eligible recent victim against the weakest eligible protected entry.
 Current requests and pending reads constrain victim selection; predicted experts
 are preferentially preserved where possible.
 
-The half-life is 32 tokens. This is an LRFU-inspired admission and replacement
-policy, rather than a change to model routing. Increasing protected capacity can
-reduce reads at the cost of more resident expert memory.
+The half-life is 32 updates. This LRFU-inspired policy controls cache
+admission and eviction. Increasing protected capacity can reduce reads at
+the cost of more resident expert memory.
 
 ### Switching between prompt processing and generation
 
@@ -230,7 +243,7 @@ reduce reads at the cost of more resident expert memory.
 stateDiagram-v2
     [*] --> Prefill
     Prefill: Shared expert bank active
-    Decode: Per-layer recent and protected cache active
+    Decode: Recent and protected cache active
     Prefill --> Decode: Synchronize, invalidate mappings, release unused shared ranges
     Decode --> Prefill: Synchronize, invalidate mappings, restore shared ranges
     Decode --> [*]: Worker stops
@@ -241,7 +254,7 @@ Phase transitions drain demand and lookahead work before changing memory ranges.
 Mappings and replacement history are invalidated where the backing expert cache
 is reset. Unused shared-bank pages become reclaimable while virtual addresses
 remain reserved. A later prefill restores the ranges before they are used.
-Per-layer decode windows remain separate from the shared-bank budget.
+Decode windows have a separate allocation from the shared bank.
 
 The prefill pipeline also stages upcoming expert reads to overlap storage access
 with current-layer computation. Its staging memory and the graph's temporary
@@ -255,7 +268,7 @@ Expert offloading addresses only one part of the process's memory requirements.
 |---|---|
 | Resident model tensors | Loaded for the worker; determined by the model and placement. |
 | Shared expert bank | Active prefill budget; reduced to the retained bank budget during decode. |
-| Per-layer expert windows | Recent and protected decode capacity, set by the model configuration. |
+| Expert windows | Recent and protected decode capacity, set by the model configuration. |
 | Attention context buffers | Grow with occupied context, up to configured capacity. |
 | Indexer keys | Key-only context storage for sparse attention indexing. |
 | Recurrent state and checkpoints | Preserve model state and configured checkpoint information. |

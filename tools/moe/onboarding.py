@@ -41,6 +41,8 @@ class Preset:
     expert_bytes: int
 
     total_gb: int
+    template: str | None = None
+    revision: str = "main"
 
 
 TEMPLATE = Path(__file__).resolve().parents[2] / "moeshift.json"
@@ -50,6 +52,10 @@ PRESETS = (
            "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "qwen4exp",
            ((f"IQ3_XXS/{FLASH}-00001-of-00002.gguf", 47_039_860_096),
             (f"IQ3_XXS/{FLASH}-00002-of-00002.gguf", 28_800_138_432)), 42_912_972_800, 120),
+    Preset("inkling-2-mini", "UD-Q4_K_XL",
+           "unsloth/Inkling-2-Mini-GGUF", "inkling2_loop",
+           (("Inkling-2-Mini-UD-Q4_K_XL.gguf", 17_629_760_736),), 15_797_846_016, 34,
+           template="inkling-2-mini.json", revision="8078d149286eec7193795413b9e0643da6d11fa1"),
     Preset("qwen-3.6-35b-a3b-q6-xl", "UD-Q6_K_XL",
            "unsloth/Qwen3.6-35B-A3B-GGUF", "qwen35moe",
            (("Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf", 31_843_777_504),), 29_154_607_104, 61),
@@ -244,7 +250,7 @@ def direct_download(url, target, size, check=None):
     partial.rename(target)
 
 
-def hf_download(hf, repo, remote, stage, size):
+def hf_download(hf, repo, remote, stage, size, revision):
     # hf-xet reports reconstructed bytes and transfer speed on separate terminal rows.
     # Use completed file bytes for the ETA, independent of compression or cache hits.
     master, slave = pty.openpty()
@@ -257,7 +263,7 @@ def hf_download(hf, repo, remote, stage, size):
     with os.fdopen(master, encoding="utf-8", errors="replace") as output, os.fdopen(slave, "wb") as terminal:
         # A fresh PTY has zero columns. Give hf room to render byte counts.
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 120, 0, 0))
-        with subprocess.Popen([hf, "download", repo, remote, "--local-dir", str(stage)],
+        with subprocess.Popen([hf, "download", repo, remote, "--revision", revision, "--local-dir", str(stage)],
                               stdout=terminal, stderr=terminal, env=env) as child:
             terminal.close()
             try:
@@ -335,7 +341,7 @@ def download(preset, folder):
                     marker.touch()
                 if stage.is_symlink() or not marker.is_file():
                     raise ValueError(f"Cannot use an existing unmanaged folder for hf: {stage}")
-                if hf_download(hf, preset.repo, remote, stage, size):
+                if hf_download(hf, preset.repo, remote, stage, size, preset.revision):
                     downloaded = stage / remote
                     validate_shard(downloaded, preset, i)
                     downloaded.rename(target)
@@ -347,7 +353,7 @@ def download(preset, folder):
                 # hf and HTTPS partials have different formats. Retain the hf cache for a later retry.
                 check_space(folder, sum(s for _, r, s in pending if not (folder / Path(r).name).exists())
                             + (0 if (folder / "experts").exists() else preset.expert_bytes))
-            direct_download(f"https://huggingface.co/{preset.repo}/resolve/main/{remote}?download=true",
+            direct_download(f"https://huggingface.co/{preset.repo}/resolve/{preset.revision}/{remote}?download=true",
                             target, size, lambda part: validate_shard(part, preset, i))
 
 
@@ -474,7 +480,7 @@ def wizard(config_path, repair):
         original = config_path.read_bytes()
     elif config_path.exists():
         raise ValueError("A configuration already exists. Run moeshift again.")
-    config = json.loads(TEMPLATE.read_text())
+    default_config = json.loads(TEMPLATE.read_text())
     while True:
         heading("01 / 03    Choose your model")
         online = can_resolve()
@@ -488,13 +494,14 @@ def wizard(config_path, repair):
         if selection == len(PRESETS) + 1:
             continue
         if selection == len(PRESETS):
-            save_config(config_path, config, original)
+            save_config(config_path, default_config, original)
             heading("✓  Configuration created")
             print(f"Configuration file: {config_path}")
             print("Manual setup guide: https://github.com/davide-troiani/moeshift/blob/main/configs/README.md")
-            print("In the JSON file, find your model under models and set args.model to its GGUF path. Add args.moe-experts only for Qwen SSD streaming. Save the file, then run moeshift.")
+            print("In the JSON file, set args.model to your GGUF path and args.moe-experts for SSD streaming. Save the file, then run moeshift.")
             return False
         preset = PRESETS[selection]
+        config = json.loads(TEMPLATE.with_name(preset.template).read_text()) if preset.template else default_config
         folder = Path.home() / ".moeshift/models" / preset.alias
         folder.mkdir(parents=True, exist_ok=True)
         model = select_source(preset, folder, online)
